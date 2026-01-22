@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -24,7 +24,8 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::relay::{RecordedEvent, Relay};
+use crate::connection::ServerInfo;
+use crate::relay::{RecordedEvent, Relay, RelayStats};
 
 // Panel components in panels.rs are reserved for future use
 
@@ -52,6 +53,12 @@ pub struct App {
     show_settings: bool,
     /// Event receiver.
     event_rx: Option<mpsc::Receiver<RecordedEvent>>,
+    /// Cached server list (updated each tick).
+    cached_servers: Vec<ServerInfo>,
+    /// Cached stats (updated each tick).
+    cached_stats: RelayStats,
+    /// Start time for uptime calculation.
+    start_time: Instant,
 }
 
 /// Panel identifiers.
@@ -77,6 +84,9 @@ impl App {
             show_help: false,
             show_settings: false,
             event_rx: None,
+            cached_servers: Vec::new(),
+            cached_stats: RelayStats::default(),
+            start_time: Instant::now(),
         }
     }
 
@@ -113,33 +123,17 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     ) -> io::Result<()> {
         let tick_rate = Duration::from_millis(self.config.tui.refresh_rate_ms);
-        let mut last_tick = Instant::now();
 
         loop {
-            // Draw UI
-            terminal.draw(|f| self.draw(f))?;
-
-            // Calculate timeout
-            let timeout = tick_rate
-                .checked_sub(last_tick.elapsed())
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            // Poll for events
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    self.handle_key(key.code, key.modifiers);
-                }
-            }
+            // Update cached data from relay (async-safe)
+            self.cached_servers = self.relay.get_servers().await;
+            self.cached_stats = self.relay.get_stats().await;
 
             // Check for new relay events
             if let Some(ref mut rx) = self.event_rx {
                 while let Ok(event) = rx.try_recv() {
                     if !self.paused {
                         self.events.push(event);
-                        // Auto-scroll to bottom if not scrolled up
-                        if self.events_scroll == 0 {
-                            // Keep at bottom
-                        }
                     }
                 }
 
@@ -151,9 +145,17 @@ impl App {
                 }
             }
 
-            // Tick
-            if last_tick.elapsed() >= tick_rate {
-                last_tick = Instant::now();
+            // Draw UI (sync)
+            terminal.draw(|f| self.draw(f))?;
+
+            // Poll for keyboard events with timeout
+            if crossterm::event::poll(tick_rate)? {
+                if let Event::Key(key) = crossterm::event::read()? {
+                    // Only handle key press, not release
+                    if key.kind == KeyEventKind::Press {
+                        self.handle_key(key.code, key.modifiers);
+                    }
+                }
             }
 
             if self.should_quit {
@@ -175,7 +177,7 @@ impl App {
         // Handle settings panel
         if self.show_settings {
             match code {
-                KeyCode::Esc => self.show_settings = false,
+                KeyCode::Esc | KeyCode::F(2) => self.show_settings = false,
                 _ => {}
             }
             return;
@@ -183,16 +185,17 @@ impl App {
 
         match code {
             // Quit
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true
             }
+            KeyCode::Esc => self.should_quit = true,
 
             // Pause/unpause
-            KeyCode::Char('p') => self.paused = !self.paused,
+            KeyCode::Char('p') | KeyCode::Char('P') => self.paused = !self.paused,
 
             // Clear events
-            KeyCode::Char('c') => {
+            KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.events.clear();
                 self.events_scroll = 0;
             }
@@ -211,7 +214,9 @@ impl App {
             KeyCode::Char('2') => self.selected_server = 2,
             KeyCode::Char('3') => self.selected_server = 3,
             KeyCode::Char('4') => self.selected_server = 4,
-            KeyCode::Char('0') => self.selected_server = 0, // All servers
+            KeyCode::Char('0') | KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.selected_server = 0
+            } // All servers
 
             // Scroll
             KeyCode::Up => {
@@ -241,7 +246,7 @@ impl App {
             }
 
             // Help
-            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('?') | KeyCode::F(1) => self.show_help = true,
 
             // Settings
             KeyCode::F(2) => self.show_settings = true,
@@ -296,7 +301,7 @@ impl App {
 
     /// Draw the header panel.
     fn draw_header(&self, f: &mut Frame, area: Rect) {
-        let uptime = futures::executor::block_on(self.relay.uptime_secs());
+        let uptime = self.start_time.elapsed().as_secs();
         let hours = uptime / 3600;
         let minutes = (uptime % 3600) / 60;
         let seconds = uptime % 60;
@@ -335,7 +340,8 @@ impl App {
 
     /// Draw the footer panel.
     fn draw_footer(&self, f: &mut Frame, area: Rect) {
-        let keybindings = " [Q]uit │ [P]ause │ [C]lear │ [1-4] Server │ [?] Help │ [F2] Settings ";
+        let keybindings =
+            " Q/Esc Quit │ P Pause │ C Clear │ 1-4/0 Server │ ↑↓ Scroll │ ? Help │ F2 Settings ";
 
         let footer = Paragraph::new(Span::styled(
             keybindings,
@@ -347,7 +353,7 @@ impl App {
 
     /// Draw the servers panel.
     fn draw_servers_panel(&self, f: &mut Frame, area: Rect) {
-        let servers = futures::executor::block_on(self.relay.get_servers());
+        let servers = &self.cached_servers;
 
         let mut lines: Vec<Line> = Vec::new();
 
@@ -356,8 +362,17 @@ impl App {
                 "No servers connected",
                 Style::default().fg(Color::DarkGray),
             )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Waiting for connections",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "on port 27050...",
+                Style::default().fg(Color::DarkGray),
+            )));
         } else {
-            for server in &servers {
+            for server in servers {
                 let status_color = Color::Green;
                 let selected = self.selected_server == server.server_id;
 
@@ -476,7 +491,7 @@ impl App {
 
         if lines.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No events",
+                "No events yet",
                 Style::default().fg(Color::DarkGray),
             )));
         }
@@ -505,8 +520,8 @@ impl App {
 
     /// Draw the stats panel.
     fn draw_stats_panel(&self, f: &mut Frame, area: Rect) {
-        let stats = futures::executor::block_on(self.relay.get_stats());
-        let servers = futures::executor::block_on(self.relay.get_servers());
+        let stats = &self.cached_stats;
+        let servers = &self.cached_servers;
 
         let mut lines = vec![
             Line::from(vec![
@@ -578,17 +593,17 @@ impl App {
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from("  Q          Quit"),
+            Line::from("  Q/Esc      Quit"),
             Line::from("  P          Pause/Resume event feed"),
             Line::from("  C          Clear event history"),
             Line::from("  Tab        Cycle focus between panels"),
-            Line::from("  1-4        Focus on server 1-4"),
-            Line::from("  0          Show all servers"),
+            Line::from("  1-4        Filter by server 1-4"),
+            Line::from("  0/A        Show all servers"),
             Line::from("  ↑/↓        Scroll events"),
             Line::from("  PgUp/PgDn  Scroll events (fast)"),
             Line::from("  Home/End   Jump to start/end"),
             Line::from("  F2         Open settings"),
-            Line::from("  ?          Show this help"),
+            Line::from("  ?/F1       Show this help"),
             Line::from(""),
             Line::from(Span::styled(
                 "Press any key to close",
@@ -596,14 +611,14 @@ impl App {
             )),
         ];
 
-        let overlay_width = 40;
+        let overlay_width = 44;
         let overlay_height = help_text.len() as u16 + 2;
 
         let overlay_area = Rect {
-            x: (area.width - overlay_width) / 2,
-            y: (area.height - overlay_height) / 2,
-            width: overlay_width,
-            height: overlay_height,
+            x: area.width.saturating_sub(overlay_width) / 2,
+            y: area.height.saturating_sub(overlay_height) / 2,
+            width: overlay_width.min(area.width),
+            height: overlay_height.min(area.height),
         };
 
         let help = Paragraph::new(help_text).block(
@@ -622,7 +637,7 @@ impl App {
     fn draw_settings_panel(&self, f: &mut Frame, area: Rect) {
         let settings_text = vec![
             Line::from(Span::styled(
-                "Settings (Read-Only in TUI)",
+                "Settings (Read-Only)",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
@@ -632,25 +647,37 @@ impl App {
             )),
             Line::from(format!("  Max Servers: {}", self.config.server.max_servers)),
             Line::from(format!(
-                "  Heartbeat Interval: {}ms",
+                "  Heartbeat: {}ms",
                 self.config.server.heartbeat_interval_ms
             )),
             Line::from(""),
             Line::from(format!(
                 "  Broadcast Chat: {}",
-                self.config.relay.broadcast_chat
+                if self.config.relay.broadcast_chat {
+                    "Yes"
+                } else {
+                    "No"
+                }
             )),
             Line::from(format!(
                 "  Broadcast Deaths: {}",
-                self.config.relay.broadcast_deaths
+                if self.config.relay.broadcast_deaths {
+                    "Yes"
+                } else {
+                    "No"
+                }
             )),
             Line::from(format!(
-                "  Cross-Server Healing: {}",
-                self.config.relay.enable_cross_healing
+                "  Cross Healing: {}",
+                if self.config.relay.enable_cross_healing {
+                    "Yes"
+                } else {
+                    "No"
+                }
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "Press Esc to close",
+                "Press Esc or F2 to close",
                 Style::default().fg(Color::DarkGray),
             )),
         ];
@@ -659,10 +686,10 @@ impl App {
         let overlay_height = settings_text.len() as u16 + 2;
 
         let overlay_area = Rect {
-            x: (area.width - overlay_width) / 2,
-            y: (area.height - overlay_height) / 2,
-            width: overlay_width,
-            height: overlay_height,
+            x: area.width.saturating_sub(overlay_width) / 2,
+            y: area.height.saturating_sub(overlay_height) / 2,
+            width: overlay_width.min(area.width),
+            height: overlay_height.min(area.height),
         };
 
         let settings = Paragraph::new(settings_text).block(
