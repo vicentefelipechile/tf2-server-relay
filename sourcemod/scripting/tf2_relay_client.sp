@@ -745,7 +745,7 @@ public Action Timer_Reconnect(Handle timer)
 // ============================================================================
 // Socket Callbacks
 // ============================================================================
-public void OnSocketConnect(AsyncSocket socket, any arg)
+public void OnSocketConnect(AsyncSocket socket)
 {
     g_bConnected = true;
     LogMessage("[Relay] Connected! Sending handshake...");
@@ -753,14 +753,14 @@ public void OnSocketConnect(AsyncSocket socket, any arg)
     SendHandshake();
 }
 
-public void OnSocketData(AsyncSocket socket, const char[] data, int dataSize, any arg)
+public void OnSocketData(AsyncSocket socket, const char[] data, int dataSize)
 {
     ProcessIncomingData(data, dataSize);
 }
 
-public void OnSocketError(AsyncSocket socket, int errorType, int errorNum, any arg)
+public void OnSocketError(AsyncSocket socket, int errorType, const char[] errorName)
 {
-    LogError("[Relay] Socket error: type=%d, num=%d", errorType, errorNum);
+    LogError("[Relay] Socket error: type=%d, name=%s", errorType, errorName);
 
     Disconnect();
     ScheduleReconnect();
@@ -823,14 +823,126 @@ int WriteU32(char[] buffer, int offset, int value)
     return 4;
 }
 
-int WriteU64(char[] buffer, int offset, const char[] steamId)
+int WriteU64(char[] buffer, int offset, const char[] steamId64)
 {
-    // Parse Steam ID 64-bit
-    // For simplicity, just write zeros - production should parse properly
+    // Parse Steam ID 64-bit string to binary
+    // Steam64 format: "76561198012345678" (17-18 digits)
+    // We need to write 8 bytes in little-endian
+
+    // SourcePawn doesn't have native 64-bit ints, so we parse manually
+    // Split into two 32-bit parts: high and low
+
+    int len = strlen(steamId64);
+    if (len == 0)
+    {
+        // Empty - write zeros
+        for (int i = 0; i < 8; i++)
+        {
+            buffer[offset + i] = 0;
+        }
+        return 8;
+    }
+
+    // For Steam64, we can use a simplified approach:
+    // Parse the string character by character and build the bytes
+    int bytes[8];
+    for (int i = 0; i < 8; i++)
+        bytes[i] = 0;
+
+    // Simple decimal string to bytes conversion
+    for (int i = 0; i < len; i++)
+    {
+        int digit = steamId64[i] - '0';
+        if (digit < 0 || digit > 9) continue;
+
+        // Multiply current value by 10 and add digit
+        // bytes[0] is least significant
+        int carry = digit;
+        for (int j = 0; j < 8; j++)
+        {
+            int val  = bytes[j] * 10 + carry;
+            bytes[j] = val & 0xFF;
+            carry    = val >> 8;
+        }
+    }
+
+    // Write to buffer (little-endian)
     for (int i = 0; i < 8; i++)
     {
-        buffer[offset + i] = 0;
+        buffer[offset + i] = bytes[i];
     }
+
+    return 8;
+}
+
+// Read Steam ID 64-bit from buffer and convert to string
+int ReadU64ToString(const char[] buffer, int offset, char[] steamId64, int maxLen)
+{
+    // Read 8 bytes in little-endian
+    int bytes[8];
+    for (int i = 0; i < 8; i++)
+    {
+        bytes[i] = buffer[offset + i] & 0xFF;
+    }
+
+    // Convert to decimal string (reverse of WriteU64)
+    // We'll build the string by repeatedly dividing by 10
+    char result[24];
+    int  resultLen = 0;
+
+    // Check if all zeros
+    bool isZero    = true;
+    for (int i = 0; i < 8; i++)
+    {
+        if (bytes[i] != 0)
+        {
+            isZero = false;
+            break;
+        }
+    }
+
+    if (isZero)
+    {
+        strcopy(steamId64, maxLen, "0");
+        return 8;
+    }
+
+    // Divide by 10 repeatedly to get digits
+    while (!isZero)
+    {
+        int remainder = 0;
+        // Divide from most significant byte
+        for (int i = 7; i >= 0; i--)
+        {
+            int val   = remainder * 256 + bytes[i];
+            bytes[i]  = val / 10;
+            remainder = val % 10;
+        }
+
+        result[resultLen++] = '0' + remainder;
+
+        // Check if all zeros
+        isZero              = true;
+        for (int i = 0; i < 8; i++)
+        {
+            if (bytes[i] != 0)
+            {
+                isZero = false;
+                break;
+            }
+        }
+    }
+
+    // Reverse the string
+    for (int i = 0; i < resultLen / 2; i++)
+    {
+        char tmp                  = result[i];
+        result[i]                 = result[resultLen - 1 - i];
+        result[resultLen - 1 - i] = tmp;
+    }
+    result[resultLen] = '\0';
+
+    strcopy(steamId64, maxLen, result);
     return 8;
 }
 
