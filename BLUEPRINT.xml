@@ -1,0 +1,1349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    TF2 Server Relay - Cross-Server Communication Blueprint
+    Version: 1.0.0
+    Author: TF2 Server Relay Team
+    
+    This blueprint defines the architecture for connecting multiple TF2 servers
+    to enable cross-play features like shared chat, death notifications, and events.
+-->
+<Blueprint version="1.0.0" project="tf2-server-relay">
+
+    <!-- ================================================================== -->
+    <!-- PROJECT OVERVIEW                                                   -->
+    <!-- ================================================================== -->
+    <Overview>
+        <Description>
+            A high-performance relay server written in Rust that connects 1-4 TF2 game servers
+            using a custom Raw TCP Protocol for maximum efficiency in local infrastructure.
+        </Description>
+        <Goals>
+            <Goal priority="1">Enable real-time cross-server communication between TF2 servers</Goal>
+            <Goal priority="2">Minimize latency with raw TCP packets instead of JSON/HTTP</Goal>
+            <Goal priority="3">Support 1 to 4 concurrent servers with seamless scaling</Goal>
+            <Goal priority="4">Maintain high reliability in local network environments</Goal>
+        </Goals>
+        <Technology>
+            <Language>Rust</Language>
+            <Protocol>Raw TCP Binary Protocol</Protocol>
+            <ServerPlugin>SourceMod with SM-Sockets Extension</ServerPlugin>
+            <Architecture>Hub-and-Spoke (Relay as central hub)</Architecture>
+        </Technology>
+    </Overview>
+
+    <!-- ================================================================== -->
+    <!-- CROSS-SERVER MECHANICS (CRITICAL)                                  -->
+    <!-- ================================================================== -->
+    <CrossServerMechanics>
+        <Description>
+            This section documents the core mechanics that enable gameplay interactions
+            between players on different servers. The most critical feature is cross-server
+            Medic healing, which requires careful synchronization.
+        </Description>
+        
+        <!-- ============================================================ -->
+        <!-- GHOST PLAYER SYSTEM                                          -->
+        <!-- ============================================================ -->
+        <GhostPlayerSystem>
+            <Description>
+                To enable cross-server interactions (healing, damage, etc.), each server
+                maintains "ghost" representations of players from other servers. These
+                ghost entities are visible and interactable but exist only as proxies.
+            </Description>
+            
+            <Concept name="Ghost Entity">
+                A fake player entity created on Server A that represents a real player
+                on Server B. Ghost entities:
+                - Are visible to all players on the local server
+                - Have synchronized position, health, team, and class
+                - Can receive healing, damage, and status effects
+                - Forward all interactions back to the real player's server
+            </Concept>
+            
+            <Implementation>
+                <Step order="1" description="Player Registration">
+                    When a player joins any server, a PLAYER_SYNC event is broadcast to all
+                    other connected servers containing: Steam ID, name, team, class, health.
+                </Step>
+                <Step order="2" description="Ghost Creation">
+                    Each receiving server creates a ghost entity (fake client or bot) that
+                    represents the remote player. The ghost is assigned to the same team.
+                </Step>
+                <Step order="3" description="Position Sync">
+                    Player positions are synchronized at a configurable rate (default: 20Hz)
+                    using PLAYER_POSITION events. Ghosts are teleported to match.
+                </Step>
+                <Step order="4" description="Interaction Forwarding">
+                    When a local player interacts with a ghost (heal, damage, etc.), the
+                    interaction is captured and forwarded to the real player's server.
+                </Step>
+                <Step order="5" description="State Confirmation">
+                    The real player's server applies the effect and sends back a confirmation
+                    with the updated state (new health, death, etc.).
+                </Step>
+            </Implementation>
+            
+            <!-- GHOST SYNC EVENTS -->
+            <GhostEvents>
+                <Event id="0x70" name="PLAYER_SYNC">
+                    <Description>Full player state sync for ghost creation/update</Description>
+                    <Payload>
+                        <Field name="steam_id" type="u64"/>
+                        <Field name="player_name" type="string"/>
+                        <Field name="team" type="u8"/>
+                        <Field name="class" type="u8"/>
+                        <Field name="health" type="u16"/>
+                        <Field name="max_health" type="u16"/>
+                        <Field name="is_alive" type="u8"/>
+                        <Field name="position_x" type="f32"/>
+                        <Field name="position_y" type="f32"/>
+                        <Field name="position_z" type="f32"/>
+                        <Field name="angle_yaw" type="f32"/>
+                    </Payload>
+                </Event>
+                
+                <Event id="0x71" name="PLAYER_POSITION">
+                    <Description>Lightweight position update (high frequency)</Description>
+                    <Payload>
+                        <Field name="steam_id" type="u64"/>
+                        <Field name="position_x" type="f32"/>
+                        <Field name="position_y" type="f32"/>
+                        <Field name="position_z" type="f32"/>
+                        <Field name="angle_yaw" type="f32"/>
+                        <Field name="velocity_x" type="f32"/>
+                        <Field name="velocity_y" type="f32"/>
+                        <Field name="velocity_z" type="f32"/>
+                    </Payload>
+                </Event>
+                
+                <Event id="0x72" name="GHOST_REMOVE">
+                    <Description>Remove ghost when player disconnects</Description>
+                    <Payload>
+                        <Field name="steam_id" type="u64"/>
+                        <Field name="reason" type="string"/>
+                    </Payload>
+                </Event>
+            </GhostEvents>
+        </GhostPlayerSystem>
+        
+        <!-- ============================================================ -->
+        <!-- CROSS-SERVER MEDIC HEALING (PRIORITY FEATURE)                -->
+        <!-- ============================================================ -->
+        <CrossServerHealing priority="critical">
+            <Description>
+                Enables a Medic on Server A to heal a player (ghost) that represents
+                a real player on Server B. The healing effect is applied to the real
+                player on their actual server.
+            </Description>
+            
+            <Workflow name="Medic Heals Remote Player">
+                <Step order="1" server="A" action="Medic targets ghost">
+                    Medic on Server A points Medi Gun at a ghost entity representing
+                    Player X from Server B. SourceMod detects healing beam lock.
+                </Step>
+                <Step order="2" server="A" action="Capture heal attempt">
+                    Plugin hooks OnTakeDamage or custom healing detection to capture:
+                    - Healer Steam ID (Medic)
+                    - Target Steam ID (ghost's real player ID)
+                    - Heal amount per tick
+                    - Medi Gun type (for Über build rate)
+                </Step>
+                <Step order="3" server="A" action="Send HEAL_REQUEST">
+                    Server A sends HEAL_REQUEST event to relay with target Steam ID.
+                    The ghost receives NO actual healing on Server A (it's just a proxy).
+                </Step>
+                <Step order="4" server="Relay" action="Route to target server">
+                    Relay identifies which server owns the target Steam ID and forwards
+                    the HEAL_REQUEST to that server (Server B in this case).
+                </Step>
+                <Step order="5" server="B" action="Apply healing">
+                    Server B receives HEAL_REQUEST, finds the real player, and applies
+                    healing using SetEntityHealth or TF2_AddPlayerCondition for overheal.
+                </Step>
+                <Step order="6" server="B" action="Send HEAL_CONFIRM">
+                    Server B sends back HEAL_CONFIRM with the player's new health value
+                    so Server A can update the ghost's displayed health bar.
+                </Step>
+                <Step order="7" server="A" action="Update ghost health">
+                    Server A receives HEAL_CONFIRM and updates the ghost entity's
+                    health display to match the real player.
+                </Step>
+            </Workflow>
+            
+            <!-- HEALING-SPECIFIC EVENTS -->
+            <HealingEvents>
+                <Event id="0x73" name="HEAL_REQUEST">
+                    <Description>Request to heal a remote player</Description>
+                    <Direction>Healer's Server → Relay → Target's Server</Direction>
+                    <Payload>
+                        <Field name="healer_steam_id" type="u64" description="Medic's Steam ID"/>
+                        <Field name="target_steam_id" type="u64" description="Target player's Steam ID"/>
+                        <Field name="heal_amount" type="u16" description="Amount to heal"/>
+                        <Field name="heal_rate" type="u8" description="Heals per second (for continuous)"/>
+                        <Field name="medigun_type" type="u8" description="0=Stock, 1=Kritz, 2=QuickFix, 3=Vacc"/>
+                        <Field name="is_healing" type="u8" description="1=started healing, 0=stopped"/>
+                    </Payload>
+                </Event>
+                
+                <Event id="0x74" name="HEAL_CONFIRM">
+                    <Description>Confirmation of healing applied</Description>
+                    <Direction>Target's Server → Relay → Healer's Server</Direction>
+                    <Payload>
+                        <Field name="target_steam_id" type="u64" description="Healed player's Steam ID"/>
+                        <Field name="new_health" type="u16" description="Player's health after healing"/>
+                        <Field name="max_health" type="u16" description="Player's max health (for overheal)"/>
+                        <Field name="overheal_amount" type="u16" description="Amount of overheal active"/>
+                        <Field name="heal_applied" type="u16" description="Actual heal amount applied"/>
+                    </Payload>
+                </Event>
+                
+                <Event id="0x75" name="UBER_SHARE">
+                    <Description>Share ÜberCharge between servers</Description>
+                    <Direction>Medic's Server → Relay → Target's Server</Direction>
+                    <Payload>
+                        <Field name="medic_steam_id" type="u64"/>
+                        <Field name="target_steam_id" type="u64"/>
+                        <Field name="uber_type" type="u8"/>
+                        <Field name="uber_duration_ms" type="u16"/>
+                        <Field name="is_active" type="u8" description="1=activated, 0=ended"/>
+                    </Payload>
+                </Event>
+            </HealingEvents>
+            
+            <UberChargeMechanics>
+                <Description>
+                    When a Medic's Über target is a ghost (remote player), the invulnerability
+                    effect must be applied on the target's actual server.
+                </Description>
+                <Workflow name="Cross-Server Über">
+                    <Step order="1">Medic activates Über on ghost target</Step>
+                    <Step order="2">UBER_SHARE event sent with uber_type and duration</Step>
+                    <Step order="3">Target server applies TF2_AddCondition(TFCond_Ubercharged)</Step>
+                    <Step order="4">Ghost on Medic's server shows Über visual effect</Step>
+                    <Step order="5">When Über ends, UBER_SHARE with is_active=0 is sent</Step>
+                </Workflow>
+            </UberChargeMechanics>
+            
+            <LatencyConsiderations>
+                <Note priority="high">
+                    Healing must feel responsive. Target latency: less than 50ms round-trip
+                    on local infrastructure. If latency exceeds 100ms, consider predictive
+                    healing on the Medic's server with reconciliation.
+                </Note>
+                <Strategy name="Predictive Healing">
+                    If enabled, Server A optimistically applies healing to the ghost
+                    immediately, then reconciles when HEAL_CONFIRM arrives. This makes
+                    healing feel instant even with network latency.
+                </Strategy>
+            </LatencyConsiderations>
+        </CrossServerHealing>
+        
+        <!-- ============================================================ -->
+        <!-- CROSS-SERVER DAMAGE                                          -->
+        <!-- ============================================================ -->
+        <CrossServerDamage>
+            <Description>
+                Similar to healing, damage dealt to ghost entities is forwarded to the
+                real player's server for application.
+            </Description>
+            <Event id="0x76" name="DAMAGE_REQUEST">
+                <Description>Request to damage a remote player</Description>
+                <Payload>
+                    <Field name="attacker_steam_id" type="u64"/>
+                    <Field name="victim_steam_id" type="u64"/>
+                    <Field name="damage_amount" type="u16"/>
+                    <Field name="weapon_id" type="u16"/>
+                    <Field name="damage_type" type="u8"/>
+                    <Field name="crit_type" type="u8"/>
+                    <Field name="hitgroup" type="u8"/>
+                </Payload>
+            </Event>
+            <Event id="0x77" name="DAMAGE_CONFIRM">
+                <Description>Confirmation of damage applied</Description>
+                <Payload>
+                    <Field name="victim_steam_id" type="u64"/>
+                    <Field name="new_health" type="u16"/>
+                    <Field name="damage_applied" type="u16"/>
+                    <Field name="is_dead" type="u8"/>
+                </Payload>
+            </Event>
+        </CrossServerDamage>
+        
+    </CrossServerMechanics>
+
+    <!-- ================================================================== -->
+    <!-- SOURCEMOD INTEGRATION                                              -->
+    <!-- ================================================================== -->
+    <SourceModIntegration>
+        
+        <!-- REQUIRED EXTENSION: AsyncSocket (libuv-based) -->
+        <Extension name="AsyncSocket Extension" required="true">
+            <Description>
+                Modern, high-performance socket extension built on libuv (the same async I/O
+                library used by Node.js). Designed specifically for minimal server jitter and
+                maximum efficiency when processing external network packets.
+            </Description>
+            <Repository verified="true" maintainer="srcdslab">https://github.com/srcdslab/sm-ext-asyncsocket</Repository>
+            <LastUpdated>2024 (actively maintained)</LastUpdated>
+            <Features>
+                <Feature>Built on libuv for maximum async I/O efficiency</Feature>
+                <Feature>Minimal game server jitter when processing packets</Feature>
+                <Feature>Designed for high-throughput, low-latency scenarios</Feature>
+                <Feature>Ideal for local infrastructure communication</Feature>
+                <Feature>Thread-safe packet handling</Feature>
+                <Feature>TCP and UDP protocol support</Feature>
+                <Feature>Binary data transmission and reception</Feature>
+            </Features>
+            <Compatibility>
+                <Engine>Source 2013 (TF2)</Engine>
+                <Status>Fully compatible, actively maintained</Status>
+            </Compatibility>
+            <Files>
+                <File platform="windows">asyncsocket.ext.dll</File>
+                <File platform="linux">asyncsocket.ext.so</File>
+                <File type="include">asyncsocket.inc</File>
+            </Files>
+            <Installation>
+                <Step order="1">Download asyncsocket.ext.dll (Windows) or asyncsocket.ext.so (Linux) from srcdslab releases</Step>
+                <Step order="2">Place extension in addons/sourcemod/extensions/</Step>
+                <Step order="3">Copy asyncsocket.inc to addons/sourcemod/scripting/include/</Step>
+                <Step order="4">Compile the tf2_relay_client.sp plugin</Step>
+                <Step order="5">Install compiled plugin to addons/sourcemod/plugins/</Step>
+            </Installation>
+        </Extension>
+        
+        <Plugin name="tf2_relay_client" filename="tf2_relay_client.smx">
+            <Description>
+                SourceMod plugin that hooks game events and forwards them to the Rust relay
+                server via TCP. Also receives events from other servers through the relay.
+            </Description>
+            <ConVars>
+                <ConVar name="sm_relay_host" default="127.0.0.1" description="Relay server hostname/IP"/>
+                <ConVar name="sm_relay_port" default="27050" description="Relay server port"/>
+                <ConVar name="sm_relay_server_id" default="1" description="Unique server identifier (1-4)"/>
+                <ConVar name="sm_relay_server_name" default="Server 1" description="Human-readable server name"/>
+                <ConVar name="sm_relay_reconnect_delay" default="5.0" description="Reconnection delay in seconds"/>
+                <ConVar name="sm_relay_enabled" default="1" description="Enable/disable relay functionality"/>
+            </ConVars>
+            <HookedEvents>
+                <Event>player_say</Event>
+                <Event>player_death</Event>
+                <Event>player_connect</Event>
+                <Event>player_disconnect</Event>
+                <Event>player_team</Event>
+                <Event>round_start</Event>
+                <Event>round_end</Event>
+                <Event>teamplay_round_win</Event>
+            </HookedEvents>
+        </Plugin>
+    </SourceModIntegration>
+
+    <!-- ================================================================== -->
+    <!-- RUST RELAY SERVER ARCHITECTURE                                     -->
+    <!-- ================================================================== -->
+    <RelayServer>
+        <Description>
+            Central relay server written in Rust using async/await with Tokio runtime.
+            Manages connections from all TF2 servers and broadcasts events between them.
+            
+            Features a Terminal User Interface (TUI) by default for real-time monitoring.
+            CLI mode available with --cli flag for headless/scripted operation.
+        </Description>
+        
+        <Dependencies>
+            <!-- Core -->
+            <Dependency name="tokio" version="1.x" features="full">Async runtime</Dependency>
+            <Dependency name="bytes" version="1.x">Efficient byte buffer handling</Dependency>
+            <Dependency name="thiserror" version="1.x">Error handling</Dependency>
+            <Dependency name="toml" version="0.8.x">Configuration parsing</Dependency>
+            <Dependency name="serde" version="1.x" features="derive">Serialization for config</Dependency>
+            
+            <!-- CLI/TUI -->
+            <Dependency name="clap" version="4.x" features="derive">Command-line argument parsing</Dependency>
+            <Dependency name="ratatui" version="0.28.x">Terminal User Interface framework</Dependency>
+            <Dependency name="crossterm" version="0.28.x">Cross-platform terminal handling</Dependency>
+            
+            <!-- Logging -->
+            <Dependency name="tracing" version="0.1.x">Logging and diagnostics</Dependency>
+            <Dependency name="tracing-subscriber" version="0.3.x">Log output formatting</Dependency>
+        </Dependencies>
+        
+        <Modules>
+            <Module name="main">Entry point, CLI parsing, and mode selection</Module>
+            <Module name="config">Configuration loading and validation</Module>
+            <Module name="server">TCP listener and connection acceptance</Module>
+            <Module name="connection">Per-server connection handler</Module>
+            <Module name="protocol">Packet parsing and serialization</Module>
+            <Module name="relay">Event routing and broadcast logic</Module>
+            <Module name="events">Event type definitions</Module>
+            <Module name="tui">Terminal User Interface rendering and input</Module>
+            <Module name="tui/panels">TUI panel components (servers, events, stats)</Module>
+        </Modules>
+        
+        <!-- COMMAND LINE INTERFACE -->
+        <CLI>
+            <Usage>./tf2-server-relay [OPTIONS]</Usage>
+            <Arguments>
+                <Argument name="--cli" short="-c" type="flag" default="false">
+                    Run in CLI mode (no TUI). Logs to stdout.
+                    Use for headless servers, scripts, or when TUI is not supported.
+                </Argument>
+                <Argument name="--config" short="-C" type="path" default="config.toml">
+                    Path to configuration file.
+                </Argument>
+                <Argument name="--bind" short="-b" type="string" default="none">
+                    Override bind address (e.g., 0.0.0.0:27050).
+                </Argument>
+                <Argument name="--log-level" short="-l" type="string" default="info">
+                    Log level: trace, debug, info, warn, error.
+                </Argument>
+                <Argument name="--version" short="-V" type="flag">
+                    Print version information.
+                </Argument>
+                <Argument name="--help" short="-h" type="flag">
+                    Print help information.
+                </Argument>
+            </Arguments>
+            <Examples>
+                <Example description="Run with default TUI">./tf2-server-relay</Example>
+                <Example description="Run in CLI mode">./tf2-server-relay --cli</Example>
+                <Example description="Custom config file">./tf2-server-relay -C /path/to/config.toml</Example>
+                <Example description="CLI mode with debug logs">./tf2-server-relay --cli -l debug</Example>
+            </Examples>
+        </CLI>
+        
+        <!-- TERMINAL USER INTERFACE -->
+        <TUI default="true">
+            <Description>
+                Real-time monitoring interface using ratatui. Displays connected servers,
+                live event feed, statistics, and system status. Keyboard-driven navigation.
+            </Description>
+            <Layout>
+                <Panel name="Header" position="top" height="3">
+                    Application title, version, uptime, and current time.
+                </Panel>
+                <Panel name="Servers" position="left" width="30%">
+                    List of connected TF2 servers with:
+                    - Server ID and name
+                    - Connection status (connected/disconnected)
+                    - Current player count
+                    - Current map
+                    - Last heartbeat time
+                </Panel>
+                <Panel name="Events" position="center" width="50%">
+                    Live feed of relayed events:
+                    - Chat messages with player names and server origin
+                    - Player deaths with attacker/victim info
+                    - Player connections/disconnections
+                    - Round start/end notifications
+                    Color-coded by event type and server of origin.
+                </Panel>
+                <Panel name="Stats" position="right" width="20%">
+                    Real-time statistics:
+                    - Total events relayed
+                    - Events per second
+                    - Bytes transferred
+                    - Connected servers count
+                    - Uptime
+                </Panel>
+                <Panel name="Footer" position="bottom" height="1">
+                    Keyboard shortcuts: [Q]uit | [P]ause | [C]lear | [S]ervers | [E]vents
+                </Panel>
+            </Layout>
+            <Keybindings>
+                <Key bind="q" action="Quit application"/>
+                <Key bind="p" action="Pause/resume event feed"/>
+                <Key bind="c" action="Clear event history"/>
+                <Key bind="Tab" action="Cycle focus between panels"/>
+                <Key bind="Up/Down" action="Scroll within focused panel"/>
+                <Key bind="1-4" action="Quick focus on server 1-4"/>
+                <Key bind="?" action="Show help overlay"/>
+                <Key bind="F2" action="Open Settings panel"/>
+            </Keybindings>
+            
+            <!-- TUI SETTINGS PANEL -->
+            <SettingsPanel>
+                <Description>
+                    In-TUI configuration panel accessible via F2. Allows runtime modification
+                    of dynamic settings without restarting the relay. Changes are saved to
+                    settings.toml automatically.
+                </Description>
+                <Navigation>
+                    <Key bind="Up/Down" action="Navigate between settings"/>
+                    <Key bind="Left/Right" action="Decrease/increase numeric values"/>
+                    <Key bind="Enter" action="Edit text/toggle boolean"/>
+                    <Key bind="Escape" action="Close settings panel"/>
+                    <Key bind="S" action="Save changes to settings.toml"/>
+                    <Key bind="R" action="Reset to defaults"/>
+                </Navigation>
+                <Categories>
+                    <Category name="Network" description="Connection and timing settings"/>
+                    <Category name="Display" description="TUI appearance and behavior"/>
+                    <Category name="Sync" description="Ghost player synchronization"/>
+                    <Category name="Logging" description="Log verbosity and output"/>
+                </Categories>
+            </SettingsPanel>
+        </TUI>
+        
+        <!-- ============================================================ -->
+        <!-- CONFIGURATION SYSTEM                                         -->
+        <!-- ============================================================ -->
+        <Configuration filename="settings.toml">
+            <Description>
+                Configuration is loaded from settings.toml on startup. In TUI mode,
+                dynamic settings can be modified at runtime via the Settings panel (F2).
+                In CLI mode (--cli), all settings are read-only from the file.
+                
+                Settings are classified as:
+                - STATIC: Can only be changed at startup (requires restart)
+                - DYNAMIC: Can be changed at runtime via TUI
+            </Description>
+            
+            <!-- SERVER SETTINGS -->
+            <ConfigSection name="server" description="Core relay server settings">
+                <Option name="bind_address" type="String" default="0.0.0.0:27050" hot_reload="false">
+                    <Description>IP and port to bind the relay server</Description>
+                    <Classification>STATIC - Requires restart to change</Classification>
+                </Option>
+                <Option name="max_servers" type="u8" default="4" hot_reload="false">
+                    <Description>Maximum number of TF2 servers (1-4)</Description>
+                    <Classification>STATIC - Requires restart to change</Classification>
+                </Option>
+                <Option name="connection_timeout_ms" type="u64" default="5000" hot_reload="true">
+                    <Description>Timeout before considering a connection dead</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="1000" max="30000"/>
+                </Option>
+                <Option name="heartbeat_interval_ms" type="u64" default="1000" hot_reload="true">
+                    <Description>Interval between heartbeat packets</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="100" max="5000"/>
+                </Option>
+            </ConfigSection>
+            
+            <!-- SYNC SETTINGS (Ghost Player System) -->
+            <ConfigSection name="sync" description="Cross-server synchronization settings">
+                <Option name="position_sync_rate_hz" type="u8" default="20" hot_reload="true">
+                    <Description>How often to sync ghost positions per second</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="5" max="60"/>
+                </Option>
+                <Option name="predictive_healing" type="bool" default="true" hot_reload="true">
+                    <Description>Enable optimistic healing for lower perceived latency</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="ghost_interpolation" type="bool" default="true" hot_reload="true">
+                    <Description>Smooth ghost movement between position updates</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="max_ghost_latency_ms" type="u64" default="100" hot_reload="true">
+                    <Description>Maximum acceptable latency for ghost updates</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="20" max="500"/>
+                </Option>
+            </ConfigSection>
+            
+            <!-- LOGGING SETTINGS -->
+            <ConfigSection name="logging" description="Log output configuration">
+                <Option name="level" type="String" default="info" hot_reload="true">
+                    <Description>Log verbosity: trace, debug, info, warn, error</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Values>trace, debug, info, warn, error</Values>
+                </Option>
+                <Option name="file" type="Option&lt;String&gt;" default="null" hot_reload="false">
+                    <Description>Optional file path to write logs</Description>
+                    <Classification>STATIC - Requires restart to change</Classification>
+                </Option>
+                <Option name="log_events" type="bool" default="true" hot_reload="true">
+                    <Description>Log all relayed events to file/console</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="log_packets" type="bool" default="false" hot_reload="true">
+                    <Description>Log raw packet data (debug only, high volume)</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+            </ConfigSection>
+            
+            <!-- TUI SETTINGS -->
+            <ConfigSection name="tui" description="Terminal User Interface settings">
+                <Option name="refresh_rate_ms" type="u64" default="100" hot_reload="true">
+                    <Description>UI refresh interval in milliseconds</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="16" max="1000"/>
+                </Option>
+                <Option name="max_event_history" type="usize" default="1000" hot_reload="true">
+                    <Description>Maximum events to keep in history</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Range min="100" max="10000"/>
+                </Option>
+                <Option name="color_scheme" type="String" default="default" hot_reload="true">
+                    <Description>TUI color theme</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                    <Values>default, dark, light, high_contrast</Values>
+                </Option>
+                <Option name="show_timestamps" type="bool" default="true" hot_reload="true">
+                    <Description>Show timestamps in event feed</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="compact_mode" type="bool" default="false" hot_reload="true">
+                    <Description>Use compact layout for smaller terminals</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+            </ConfigSection>
+            
+            <!-- RELAY BEHAVIOR SETTINGS -->
+            <ConfigSection name="relay" description="Event relay behavior">
+                <Option name="broadcast_chat" type="bool" default="true" hot_reload="true">
+                    <Description>Relay chat messages between servers</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="broadcast_deaths" type="bool" default="true" hot_reload="true">
+                    <Description>Relay death events between servers</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="broadcast_connect" type="bool" default="true" hot_reload="true">
+                    <Description>Relay player connect/disconnect events</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="enable_cross_healing" type="bool" default="true" hot_reload="true">
+                    <Description>Allow Medics to heal players on other servers</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+                <Option name="enable_cross_damage" type="bool" default="true" hot_reload="true">
+                    <Description>Allow damage between players on different servers</Description>
+                    <Classification>DYNAMIC - Can change at runtime</Classification>
+                </Option>
+            </ConfigSection>
+            
+            <!-- EXAMPLE settings.toml FILE -->
+            <ExampleFile>
+                <![CDATA[
+# TF2 Server Relay Configuration
+# Settings marked with [DYNAMIC] can be changed at runtime via TUI (F2)
+
+[server]
+bind_address = "0.0.0.0:27050"  # [STATIC] IP:PORT to listen on
+max_servers = 4                  # [STATIC] Maximum connected servers (1-4)
+connection_timeout_ms = 5000     # [DYNAMIC] Connection timeout
+heartbeat_interval_ms = 1000     # [DYNAMIC] Heartbeat interval
+
+[sync]
+position_sync_rate_hz = 20       # [DYNAMIC] Ghost position updates per second
+predictive_healing = true        # [DYNAMIC] Optimistic healing
+ghost_interpolation = true       # [DYNAMIC] Smooth ghost movement
+max_ghost_latency_ms = 100       # [DYNAMIC] Max acceptable ghost latency
+
+[logging]
+level = "info"                   # [DYNAMIC] trace/debug/info/warn/error
+file = null                      # [STATIC] Optional log file path
+log_events = true                # [DYNAMIC] Log relayed events
+log_packets = false              # [DYNAMIC] Log raw packets (debug)
+
+[tui]
+refresh_rate_ms = 100            # [DYNAMIC] UI refresh rate
+max_event_history = 1000         # [DYNAMIC] Event history size
+color_scheme = "default"         # [DYNAMIC] default/dark/light/high_contrast
+show_timestamps = true           # [DYNAMIC] Show event timestamps
+compact_mode = false             # [DYNAMIC] Compact layout
+
+[relay]
+broadcast_chat = true            # [DYNAMIC] Relay chat messages
+broadcast_deaths = true          # [DYNAMIC] Relay death events
+broadcast_connect = true         # [DYNAMIC] Relay connect/disconnect
+enable_cross_healing = true      # [DYNAMIC] Cross-server Medic healing
+enable_cross_damage = true       # [DYNAMIC] Cross-server damage
+                ]]>
+            </ExampleFile>
+        </Configuration>
+    </RelayServer>
+
+    <!-- ================================================================== -->
+    <!-- RAW TCP PROTOCOL SPECIFICATION                                     -->
+    <!-- ================================================================== -->
+    <Protocol name="TF2RelayProtocol" version="1">
+        <Description>
+            Binary protocol optimized for minimal overhead and maximum efficiency.
+            All multi-byte integers use Little-Endian byte order.
+            Strings are length-prefixed with a single byte (max 255 chars).
+        </Description>
+        
+        <!-- PACKET STRUCTURE -->
+        <PacketStructure>
+            <Header>
+                <Field name="magic" type="u16" size="2" value="0x5446" description="Magic bytes 'TF' (0x54, 0x46)"/>
+                <Field name="version" type="u8" size="1" description="Protocol version (currently 1)"/>
+                <Field name="packet_type" type="u8" size="1" description="Type of packet (see EventTypes)"/>
+                <Field name="payload_length" type="u16" size="2" description="Length of payload in bytes"/>
+                <Field name="server_id" type="u8" size="1" description="Origin server ID (1-4, 0 for relay)"/>
+                <Field name="sequence" type="u16" size="2" description="Packet sequence number"/>
+            </Header>
+            <Payload>
+                <Description>Variable-length payload based on packet_type</Description>
+            </Payload>
+            <Checksum>
+                <Field name="crc8" type="u8" size="1" description="CRC-8 checksum of header + payload"/>
+            </Checksum>
+        </PacketStructure>
+        
+        <!-- HEADER TOTAL SIZE: 9 bytes + payload + 1 byte checksum -->
+        <PacketDiagram>
+            <![CDATA[
+            +--------+--------+--------+--------+--------+--------+--------+--------+--------+
+            | MAGIC (2 bytes) |VERSION | TYPE   | PAYLOAD LENGTH  |SERV_ID | SEQUENCE (2)    |
+            +--------+--------+--------+--------+--------+--------+--------+--------+--------+
+            |  0x54  |  0x46  |  0x01  |  0xXX  |  0xXX  |  0xXX  |  0xXX  |  0xXX  |  0xXX  |
+            +--------+--------+--------+--------+--------+--------+--------+--------+--------+
+            |                           PAYLOAD (variable)                                   |
+            +--------+--------+--------+--------+--------+--------+--------+--------+--------+
+            |  CRC8  |
+            +--------+
+            ]]>
+        </PacketDiagram>
+        
+        <!-- STRING ENCODING -->
+        <StringEncoding>
+            <Description>
+                Strings are encoded as length-prefixed with a single byte length indicator.
+                Maximum string length is 255 bytes. Strings use UTF-8 encoding.
+            </Description>
+            <Format>
+                <Field name="length" type="u8" size="1" description="String length in bytes"/>
+                <Field name="data" type="bytes" size="length" description="UTF-8 encoded string data"/>
+            </Format>
+        </StringEncoding>
+    </Protocol>
+
+    <!-- ================================================================== -->
+    <!-- EVENT TYPE DICTIONARY                                              -->
+    <!-- ================================================================== -->
+    <EventDictionary>
+        <Description>
+            Complete dictionary of event types with their packet type IDs and payload structures.
+            Event IDs 0x00-0x0F are reserved for system/control messages.
+            Event IDs 0x10-0x7F are for game events.
+            Event IDs 0x80-0xFF are reserved for future extensions.
+        </Description>
+        
+        <!-- SYSTEM EVENTS (0x00 - 0x0F) -->
+        <EventCategory name="System" range="0x00-0x0F">
+            
+            <Event id="0x00" name="HANDSHAKE">
+                <Description>Initial connection handshake from server to relay</Description>
+                <Direction>Server → Relay</Direction>
+                <Payload>
+                    <Field name="server_id" type="u8" description="Server's unique ID (1-4)"/>
+                    <Field name="server_name" type="string" description="Human-readable server name"/>
+                    <Field name="map_name" type="string" description="Current map name"/>
+                    <Field name="max_players" type="u8" description="Maximum player slots"/>
+                    <Field name="current_players" type="u8" description="Current player count"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x01" name="HANDSHAKE_ACK">
+                <Description>Relay acknowledgment of successful handshake</Description>
+                <Direction>Relay → Server</Direction>
+                <Payload>
+                    <Field name="success" type="u8" description="1 = success, 0 = failure"/>
+                    <Field name="assigned_id" type="u8" description="Confirmed server ID"/>
+                    <Field name="connected_servers" type="u8" description="Number of connected servers"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x02" name="HEARTBEAT">
+                <Description>Keep-alive ping from server</Description>
+                <Direction>Server → Relay</Direction>
+                <Payload>
+                    <Field name="timestamp" type="u32" description="Unix timestamp (seconds)"/>
+                    <Field name="current_players" type="u8" description="Current player count"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x03" name="HEARTBEAT_ACK">
+                <Description>Heartbeat acknowledgment from relay</Description>
+                <Direction>Relay → Server</Direction>
+                <Payload>
+                    <Field name="timestamp" type="u32" description="Echo of received timestamp"/>
+                    <Field name="connected_servers" type="u8" description="Current connected server count"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x04" name="SERVER_CONNECT">
+                <Description>Notification that a new server connected to the relay</Description>
+                <Direction>Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="server_id" type="u8" description="ID of newly connected server"/>
+                    <Field name="server_name" type="string" description="Name of connected server"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x05" name="SERVER_DISCONNECT">
+                <Description>Notification that a server disconnected from the relay</Description>
+                <Direction>Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="server_id" type="u8" description="ID of disconnected server"/>
+                    <Field name="reason" type="string" description="Disconnection reason"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x06" name="ERROR">
+                <Description>Error notification</Description>
+                <Direction>Bidirectional</Direction>
+                <Payload>
+                    <Field name="error_code" type="u16" description="Numeric error code"/>
+                    <Field name="error_message" type="string" description="Human-readable error"/>
+                </Payload>
+            </Event>
+            
+        </EventCategory>
+        
+        <!-- CHAT EVENTS (0x10 - 0x1F) -->
+        <EventCategory name="Chat" range="0x10-0x1F">
+            
+            <Event id="0x10" name="CHAT_MESSAGE">
+                <Description>Player chat message (public team/all chat)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="player_name" type="string" description="Sender's display name"/>
+                    <Field name="steam_id" type="u64" description="Sender's Steam ID (64-bit)"/>
+                    <Field name="team" type="u8" description="0=Spectator, 1=Unassigned, 2=Red, 3=Blu"/>
+                    <Field name="chat_type" type="u8" description="0=All chat, 1=Team chat"/>
+                    <Field name="message" type="string" description="Chat message content"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x11" name="ADMIN_MESSAGE">
+                <Description>Admin broadcast message (displayed to all players)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="admin_name" type="string" description="Admin's display name"/>
+                    <Field name="message" type="string" description="Broadcast message"/>
+                    <Field name="color" type="u32" description="RGBA color for display"/>
+                </Payload>
+            </Event>
+            
+        </EventCategory>
+        
+        <!-- PLAYER EVENTS (0x20 - 0x3F) -->
+        <EventCategory name="Player" range="0x20-0x3F">
+            
+            <Event id="0x20" name="PLAYER_DEATH">
+                <Description>Player death event</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="victim_name" type="string" description="Victim's display name"/>
+                    <Field name="victim_steam_id" type="u64" description="Victim's Steam ID"/>
+                    <Field name="victim_team" type="u8" description="Victim's team"/>
+                    <Field name="victim_class" type="u8" description="Victim's TF2 class (1-9)"/>
+                    <Field name="attacker_name" type="string" description="Attacker's display name (empty if world)"/>
+                    <Field name="attacker_steam_id" type="u64" description="Attacker's Steam ID (0 if world)"/>
+                    <Field name="attacker_team" type="u8" description="Attacker's team"/>
+                    <Field name="attacker_class" type="u8" description="Attacker's TF2 class"/>
+                    <Field name="weapon" type="string" description="Weapon used (item definition name)"/>
+                    <Field name="crit_type" type="u8" description="0=Normal, 1=Mini-crit, 2=Crit"/>
+                    <Field name="death_flags" type="u16" description="Bitfield for special death conditions"/>
+                </Payload>
+                <DeathFlags>
+                    <Flag bit="0" name="HEADSHOT" value="0x0001"/>
+                    <Flag bit="1" name="BACKSTAB" value="0x0002"/>
+                    <Flag bit="2" name="AIRBORNE" value="0x0004"/>
+                    <Flag bit="3" name="DOMINATION" value="0x0008"/>
+                    <Flag bit="4" name="REVENGE" value="0x0010"/>
+                    <Flag bit="5" name="FEIGN_DEATH" value="0x0020"/>
+                    <Flag bit="6" name="SUICIDE" value="0x0040"/>
+                    <Flag bit="7" name="ENVIRONMENTAL" value="0x0080"/>
+                </DeathFlags>
+            </Event>
+            
+            <Event id="0x21" name="PLAYER_CONNECT">
+                <Description>Player connected to a server</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="player_name" type="string" description="Player's display name"/>
+                    <Field name="steam_id" type="u64" description="Player's Steam ID"/>
+                    <Field name="ip_hash" type="u32" description="Hashed IP for privacy (optional)"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x22" name="PLAYER_DISCONNECT">
+                <Description>Player disconnected from a server</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="player_name" type="string" description="Player's display name"/>
+                    <Field name="steam_id" type="u64" description="Player's Steam ID"/>
+                    <Field name="reason" type="string" description="Disconnect reason"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x23" name="PLAYER_TEAM_CHANGE">
+                <Description>Player changed teams</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="player_name" type="string" description="Player's display name"/>
+                    <Field name="steam_id" type="u64" description="Player's Steam ID"/>
+                    <Field name="old_team" type="u8" description="Previous team"/>
+                    <Field name="new_team" type="u8" description="New team"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x24" name="PLAYER_CLASS_CHANGE">
+                <Description>Player changed class</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="player_name" type="string" description="Player's display name"/>
+                    <Field name="steam_id" type="u64" description="Player's Steam ID"/>
+                    <Field name="new_class" type="u8" description="New TF2 class ID"/>
+                </Payload>
+                <ClassIDs>
+                    <Class id="0" name="UNKNOWN"/>
+                    <Class id="1" name="SCOUT"/>
+                    <Class id="2" name="SNIPER"/>
+                    <Class id="3" name="SOLDIER"/>
+                    <Class id="4" name="DEMOMAN"/>
+                    <Class id="5" name="MEDIC"/>
+                    <Class id="6" name="HEAVY"/>
+                    <Class id="7" name="PYRO"/>
+                    <Class id="8" name="SPY"/>
+                    <Class id="9" name="ENGINEER"/>
+                </ClassIDs>
+            </Event>
+            
+        </EventCategory>
+        
+        <!-- ============================================================ -->
+        <!-- TF2 GAMEPLAY MECHANICS EVENTS (0x30 - 0x3F)                   -->
+        <!-- Source: https://wiki.alliedmods.net/Team_Fortress_2_Events   -->
+        <!-- ============================================================ -->
+        <EventCategory name="Gameplay" range="0x30-0x3F">
+            <Description>
+                Core TF2 gameplay mechanics events required for cross-server synchronization
+                in casual game modes. Covers healing, damage, buildings, projectiles, and
+                status effects. All parameters verified from AlliedModders wiki.
+            </Description>
+            
+            <!-- HEALING EVENTS -->
+            <Event id="0x30" name="PLAYER_HEALED">
+                <Description>Player receives healing from any source (Medic, Dispenser, health pack)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_healed</SourceEvent>
+                <Payload>
+                    <Field name="patient_steam_id" type="u64" description="Steam ID of healed player"/>
+                    <Field name="healer_steam_id" type="u64" description="Steam ID of healer (0 if health pack)"/>
+                    <Field name="amount" type="u16" description="Amount of health restored"/>
+                    <Field name="heal_source" type="u8" description="Source type (see HealSource)"/>
+                </Payload>
+                <HealSource>
+                    <Source id="0" name="MEDIGUN"/>
+                    <Source id="1" name="DISPENSER"/>
+                    <Source id="2" name="HEALTHPACK_SMALL"/>
+                    <Source id="3" name="HEALTHPACK_MEDIUM"/>
+                    <Source id="4" name="HEALTHPACK_LARGE"/>
+                    <Source id="5" name="PAYLOAD_CART"/>
+                    <Source id="6" name="REGEN"/>
+                    <Source id="7" name="OTHER"/>
+                </HealSource>
+            </Event>
+            
+            <Event id="0x31" name="BUILDING_HEALED">
+                <Description>Engineer building is repaired/healed</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>building_healed</SourceEvent>
+                <Payload>
+                    <Field name="building_id" type="u16" description="Building entity index"/>
+                    <Field name="healer_steam_id" type="u64" description="Steam ID of Engineer healing"/>
+                    <Field name="amount" type="u16" description="Amount of health restored"/>
+                    <Field name="building_type" type="u8" description="Type of building (see BuildingType)"/>
+                </Payload>
+            </Event>
+            
+            <!-- UBERCHARGE EVENTS -->
+            <Event id="0x32" name="UBER_DEPLOYED">
+                <Description>Medic activates ÜberCharge on a target</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_chargedeployed</SourceEvent>
+                <Payload>
+                    <Field name="medic_steam_id" type="u64" description="Steam ID of Medic"/>
+                    <Field name="target_steam_id" type="u64" description="Steam ID of Über target"/>
+                    <Field name="uber_type" type="u8" description="Type of Über (see UberType)"/>
+                </Payload>
+                <UberType>
+                    <Type id="0" name="INVULNERABILITY" description="Stock Medi Gun"/>
+                    <Type id="1" name="CRITBOOST" description="Kritzkrieg"/>
+                    <Type id="2" name="MEGAHEAL" description="Quick-Fix"/>
+                    <Type id="3" name="BULLETBLOCK" description="Vaccinator - Bullets"/>
+                    <Type id="4" name="BLASTBLOCK" description="Vaccinator - Explosives"/>
+                    <Type id="5" name="FIREBLOCK" description="Vaccinator - Fire"/>
+                </UberType>
+            </Event>
+            
+            <Event id="0x33" name="PLAYER_INVULNED">
+                <Description>Player becomes invulnerable (Über, Bonk, etc.)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_invulned</SourceEvent>
+                <Payload>
+                    <Field name="player_steam_id" type="u64" description="Steam ID of invulnerable player"/>
+                    <Field name="medic_steam_id" type="u64" description="Steam ID of Medic (0 if self-applied)"/>
+                    <Field name="duration_ms" type="u16" description="Expected duration in milliseconds"/>
+                </Payload>
+            </Event>
+            
+            <!-- DAMAGE EVENTS -->
+            <Event id="0x34" name="PLAYER_HURT">
+                <Description>Player takes damage from any source</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_hurt</SourceEvent>
+                <Payload>
+                    <Field name="victim_steam_id" type="u64" description="Steam ID of damaged player"/>
+                    <Field name="attacker_steam_id" type="u64" description="Steam ID of attacker (0 if world)"/>
+                    <Field name="damage_amount" type="u16" description="Damage dealt"/>
+                    <Field name="health_remaining" type="u16" description="Victim's health after damage"/>
+                    <Field name="weapon_id" type="u16" description="Weapon definition index"/>
+                    <Field name="damage_type" type="u8" description="Damage type flags"/>
+                    <Field name="crit_type" type="u8" description="0=Normal, 1=Mini-crit, 2=Critical"/>
+                    <Field name="hitgroup" type="u8" description="Body part hit (see HitGroup)"/>
+                </Payload>
+                <HitGroup>
+                    <Group id="0" name="GENERIC"/>
+                    <Group id="1" name="HEAD"/>
+                    <Group id="2" name="CHEST"/>
+                    <Group id="3" name="STOMACH"/>
+                    <Group id="4" name="LEFT_ARM"/>
+                    <Group id="5" name="RIGHT_ARM"/>
+                    <Group id="6" name="LEFT_LEG"/>
+                    <Group id="7" name="RIGHT_LEG"/>
+                </HitGroup>
+            </Event>
+            
+            <!-- BUILDING EVENTS -->
+            <Event id="0x35" name="BUILDING_BUILT">
+                <Description>Engineer places a new building</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_builtobject</SourceEvent>
+                <Payload>
+                    <Field name="builder_steam_id" type="u64" description="Steam ID of Engineer"/>
+                    <Field name="building_type" type="u8" description="Type of building (see BuildingType)"/>
+                    <Field name="building_id" type="u16" description="Building entity index"/>
+                    <Field name="level" type="u8" description="Building level (1-3)"/>
+                    <Field name="position_x" type="f32" description="X position"/>
+                    <Field name="position_y" type="f32" description="Y position"/>
+                    <Field name="position_z" type="f32" description="Z position"/>
+                </Payload>
+                <BuildingType>
+                    <Type id="0" name="SENTRY"/>
+                    <Type id="1" name="DISPENSER"/>
+                    <Type id="2" name="TELEPORTER_ENTRANCE"/>
+                    <Type id="3" name="TELEPORTER_EXIT"/>
+                </BuildingType>
+            </Event>
+            
+            <Event id="0x36" name="BUILDING_DESTROYED">
+                <Description>Building is destroyed by enemy or environment</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>object_destroyed</SourceEvent>
+                <Payload>
+                    <Field name="owner_steam_id" type="u64" description="Steam ID of building owner"/>
+                    <Field name="attacker_steam_id" type="u64" description="Steam ID of destroyer"/>
+                    <Field name="building_type" type="u8" description="Type of building"/>
+                    <Field name="building_id" type="u16" description="Building entity index"/>
+                    <Field name="weapon" type="string" description="Weapon used to destroy"/>
+                    <Field name="was_sapped" type="u8" description="1 if destroyed by Sapper"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x37" name="BUILDING_SAPPED">
+                <Description>Spy places Sapper on enemy building</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_sapped_object</SourceEvent>
+                <Payload>
+                    <Field name="spy_steam_id" type="u64" description="Steam ID of Spy"/>
+                    <Field name="owner_steam_id" type="u64" description="Steam ID of building owner"/>
+                    <Field name="building_type" type="u8" description="Type of building sapped"/>
+                    <Field name="sapper_id" type="u16" description="Sapper entity index"/>
+                </Payload>
+            </Event>
+            
+            <!-- PROJECTILE & PYRO EVENTS -->
+            <Event id="0x38" name="PROJECTILE_DEFLECTED">
+                <Description>Pyro airblasts a projectile or pushes a player</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>object_deflected</SourceEvent>
+                <Payload>
+                    <Field name="pyro_steam_id" type="u64" description="Steam ID of Pyro"/>
+                    <Field name="original_owner_steam_id" type="u64" description="Original projectile owner"/>
+                    <Field name="weapon_id" type="u16" description="0 if pushed player, else projectile weapon ID"/>
+                    <Field name="projectile_id" type="u16" description="Projectile entity index (0 if player push)"/>
+                </Payload>
+            </Event>
+            
+            <!-- STATUS EFFECT EVENTS -->
+            <Event id="0x39" name="PLAYER_IGNITED">
+                <Description>Player is set on fire</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_ignited</SourceEvent>
+                <Payload>
+                    <Field name="victim_steam_id" type="u64" description="Steam ID of burning player"/>
+                    <Field name="pyro_steam_id" type="u64" description="Steam ID of Pyro who ignited"/>
+                    <Field name="weapon_id" type="u16" description="Weapon used to ignite"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3A" name="PLAYER_EXTINGUISHED">
+                <Description>Player fire is extinguished (water, Medic, Jarate, etc.)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_extinguished</SourceEvent>
+                <Payload>
+                    <Field name="victim_steam_id" type="u64" description="Steam ID of extinguished player"/>
+                    <Field name="healer_steam_id" type="u64" description="Steam ID of extinguisher (0 if self)"/>
+                    <Field name="item_def_index" type="u16" description="Item used to extinguish"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3B" name="PLAYER_JARATED">
+                <Description>Player is covered in Jarate (mini-crits)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_jarated</SourceEvent>
+                <Payload>
+                    <Field name="victim_steam_id" type="u64" description="Steam ID of Jarated player"/>
+                    <Field name="thrower_steam_id" type="u64" description="Steam ID of Sniper who threw"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3C" name="PLAYER_TELEPORTED">
+                <Description>Player uses a Teleporter</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_teleported</SourceEvent>
+                <Payload>
+                    <Field name="player_steam_id" type="u64" description="Steam ID of teleported player"/>
+                    <Field name="builder_steam_id" type="u64" description="Steam ID of Teleporter owner"/>
+                    <Field name="distance" type="f32" description="Distance traveled via teleporter"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3D" name="PLAYER_SPAWN">
+                <Description>Player spawns or respawns</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>player_spawn</SourceEvent>
+                <Payload>
+                    <Field name="player_steam_id" type="u64" description="Steam ID of spawning player"/>
+                    <Field name="team" type="u8" description="Team ID (2=RED, 3=BLU)"/>
+                    <Field name="class" type="u8" description="Class ID (1-9)"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3E" name="MEDIC_DEATH">
+                <Description>Medic dies (includes Über charge info)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>medic_death</SourceEvent>
+                <Payload>
+                    <Field name="medic_steam_id" type="u64" description="Steam ID of dead Medic"/>
+                    <Field name="attacker_steam_id" type="u64" description="Steam ID of killer"/>
+                    <Field name="healing_done" type="u16" description="Total healing this life"/>
+                    <Field name="had_uber" type="u8" description="1 if had full ÜberCharge"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x3F" name="SENTRY_ATTACK">
+                <Description>Sentry Gun fires at an enemy (for cross-server targeting)</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <SourceEvent>sentry_on_go_active (custom)</SourceEvent>
+                <Payload>
+                    <Field name="sentry_id" type="u16" description="Sentry entity index"/>
+                    <Field name="owner_steam_id" type="u64" description="Steam ID of Engineer"/>
+                    <Field name="target_steam_id" type="u64" description="Steam ID of target player"/>
+                    <Field name="sentry_level" type="u8" description="Sentry level (1-3)"/>
+                </Payload>
+            </Event>
+            
+        </EventCategory>
+        
+        <!-- GAME EVENTS (0x40 - 0x5F) -->
+        <EventCategory name="Game" range="0x40-0x5F">
+            
+            <Event id="0x40" name="ROUND_START">
+                <Description>Round has started</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="map_name" type="string" description="Current map"/>
+                    <Field name="round_number" type="u8" description="Round number in match"/>
+                    <Field name="time_limit" type="u16" description="Round time limit in seconds"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x41" name="ROUND_END">
+                <Description>Round has ended</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="winning_team" type="u8" description="Winning team (0=Stalemate)"/>
+                    <Field name="reason" type="u8" description="Win reason code"/>
+                    <Field name="round_time" type="u16" description="Round duration in seconds"/>
+                    <Field name="red_score" type="u16" description="RED team score"/>
+                    <Field name="blu_score" type="u16" description="BLU team score"/>
+                </Payload>
+                <WinReasons>
+                    <Reason id="0" name="STALEMATE"/>
+                    <Reason id="1" name="OBJECTIVES"/>
+                    <Reason id="2" name="TIME_LIMIT"/>
+                    <Reason id="3" name="ALL_ELIMINATED"/>
+                    <Reason id="4" name="POINTS"/>
+                </WinReasons>
+            </Event>
+            
+            <Event id="0x42" name="MAP_CHANGE">
+                <Description>Server changing maps</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="old_map" type="string" description="Previous map name"/>
+                    <Field name="new_map" type="string" description="New map name"/>
+                </Payload>
+            </Event>
+            
+            <Event id="0x43" name="GAME_MODE_INFO">
+                <Description>Game mode information update</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="game_mode" type="u8" description="Game mode identifier"/>
+                    <Field name="game_mode_name" type="string" description="Human-readable mode name"/>
+                </Payload>
+                <GameModes>
+                    <Mode id="0" name="UNKNOWN"/>
+                    <Mode id="1" name="CTF"/>
+                    <Mode id="2" name="CP"/>
+                    <Mode id="3" name="PAYLOAD"/>
+                    <Mode id="4" name="ARENA"/>
+                    <Mode id="5" name="KOTH"/>
+                    <Mode id="6" name="PAYLOAD_RACE"/>
+                    <Mode id="7" name="MVM"/>
+                    <Mode id="8" name="MANNPOWER"/>
+                    <Mode id="9" name="PASSTIME"/>
+                </GameModes>
+            </Event>
+            
+        </EventCategory>
+        
+        <!-- CUSTOM/EXTENSION EVENTS (0x60 - 0x7F) -->
+        <EventCategory name="Custom" range="0x60-0x7F">
+            <Description>
+                Reserved for custom events that can be defined by server operators.
+                These events have a flexible payload structure with a key-value format.
+            </Description>
+            
+            <Event id="0x60" name="CUSTOM_EVENT">
+                <Description>Generic custom event for extensibility</Description>
+                <Direction>Server → Relay → All Servers</Direction>
+                <Payload>
+                    <Field name="event_name" type="string" description="Custom event identifier"/>
+                    <Field name="data_count" type="u8" description="Number of key-value pairs"/>
+                    <Field name="data" type="kv_array" description="Array of key-value pairs"/>
+                </Payload>
+                <KeyValueFormat>
+                    <Field name="key" type="string" description="Data key name"/>
+                    <Field name="value_type" type="u8" description="0=string, 1=i32, 2=f32, 3=bool"/>
+                    <Field name="value" type="variable" description="Value based on type"/>
+                </KeyValueFormat>
+            </Event>
+            
+        </EventCategory>
+        
+    </EventDictionary>
+
+    <!-- ================================================================== -->
+    <!-- PROJECT STRUCTURE                                                  -->
+    <!-- ================================================================== -->
+    <ProjectStructure>
+        <Directory name="tf2-server-relay" description="Root project directory">
+            <!-- Rust Relay Server -->
+            <Directory name="relay" description="Rust relay server application">
+                <File name="Cargo.toml" description="Rust project manifest"/>
+                <Directory name="src">
+                    <File name="main.rs" description="Entry point"/>
+                    <File name="config.rs" description="Configuration handling"/>
+                    <File name="server.rs" description="TCP listener"/>
+                    <File name="connection.rs" description="Connection state machine"/>
+                    <File name="protocol.rs" description="Packet parsing/serialization"/>
+                    <File name="relay.rs" description="Event routing logic"/>
+                    <File name="events.rs" description="Event definitions"/>
+                    <File name="error.rs" description="Error types"/>
+                </Directory>
+            </Directory>
+            
+            <!-- SourceMod Plugin -->
+            <Directory name="sourcemod" description="SourceMod plugin files">
+                <Directory name="scripting">
+                    <File name="tf2_relay_client.sp" description="Main plugin source"/>
+                    <Directory name="include">
+                        <File name="tf2_relay.inc" description="Include file for other plugins"/>
+                    </Directory>
+                </Directory>
+                <Directory name="configs">
+                    <File name="tf2_relay.cfg" description="Plugin configuration"/>
+                </Directory>
+            </Directory>
+            
+            <!-- Configuration -->
+            <File name="config.toml" description="Relay server configuration"/>
+            <File name="BLUEPRINT.xml" description="This file"/>
+            <File name="README.md" description="Project documentation"/>
+        </Directory>
+    </ProjectStructure>
+
+    <!-- ================================================================== -->
+    <!-- ERROR CODES                                                        -->
+    <!-- ================================================================== -->
+    <ErrorCodes>
+        <Category name="Connection" range="1000-1099">
+            <Error code="1000" name="CONNECTION_REFUSED" description="Relay refused connection"/>
+            <Error code="1001" name="SERVER_FULL" description="Maximum servers already connected"/>
+            <Error code="1002" name="DUPLICATE_ID" description="Server ID already in use"/>
+            <Error code="1003" name="HANDSHAKE_TIMEOUT" description="Handshake not completed in time"/>
+            <Error code="1004" name="HEARTBEAT_TIMEOUT" description="No heartbeat received"/>
+        </Category>
+        <Category name="Protocol" range="2000-2099">
+            <Error code="2000" name="INVALID_MAGIC" description="Invalid magic bytes"/>
+            <Error code="2001" name="UNSUPPORTED_VERSION" description="Protocol version not supported"/>
+            <Error code="2002" name="UNKNOWN_PACKET_TYPE" description="Unrecognized packet type"/>
+            <Error code="2003" name="CHECKSUM_MISMATCH" description="CRC checksum validation failed"/>
+            <Error code="2004" name="PAYLOAD_TOO_LARGE" description="Payload exceeds maximum size"/>
+            <Error code="2005" name="MALFORMED_PACKET" description="Packet structure invalid"/>
+        </Category>
+        <Category name="Server" range="3000-3099">
+            <Error code="3000" name="RELAY_SHUTDOWN" description="Relay server shutting down"/>
+            <Error code="3001" name="INTERNAL_ERROR" description="Internal relay error"/>
+        </Category>
+    </ErrorCodes>
+
+    <!-- ================================================================== -->
+    <!-- PERFORMANCE CONSIDERATIONS                                         -->
+    <!-- ================================================================== -->
+    <Performance>
+        <Metric name="Max Packet Size" value="4096 bytes" description="Maximum single packet size"/>
+        <Metric name="Header Overhead" value="10 bytes" description="Fixed header + checksum size"/>
+        <Metric name="Expected Latency" value="&lt;1ms" description="Local network latency target"/>
+        <Metric name="Heartbeat Interval" value="1000ms" description="Connection keep-alive interval"/>
+        <Metric name="Connection Timeout" value="5000ms" description="Time before connection considered dead"/>
+        
+        <Optimizations>
+            <Optimization name="Zero-Copy Parsing">
+                Use bytes crate for zero-copy buffer handling where possible
+            </Optimization>
+            <Optimization name="Connection Pooling">
+                Pre-allocated connection slots for 1-4 servers
+            </Optimization>
+            <Optimization name="Async I/O">
+                Non-blocking I/O with Tokio for maximum concurrency
+            </Optimization>
+            <Optimization name="Binary Protocol">
+                No JSON/text parsing overhead, direct binary field access
+            </Optimization>
+        </Optimizations>
+    </Performance>
+
+    <!-- ================================================================== -->
+    <!-- TEAM DEFINITIONS                                                   -->
+    <!-- ================================================================== -->
+    <TeamDefinitions>
+        <Team id="0" name="Unassigned" color="0xCCCCCC"/>
+        <Team id="1" name="Spectator" color="0xBDBDBD"/>
+        <Team id="2" name="RED" color="0xBD3B3B"/>
+        <Team id="3" name="BLU" color="0x5B8DD8"/>
+    </TeamDefinitions>
+
+</Blueprint>
