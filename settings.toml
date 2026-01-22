@@ -1,0 +1,74 @@
+# TF2 Server Relay Configuration
+# Settings marked with [DYNAMIC] can be changed at runtime via TUI (F2)
+# Settings marked with [STATIC] require a restart to take effect
+
+[server]
+# IP and port to bind the relay server [STATIC]
+bind_address = "0.0.0.0:27050"
+
+# Maximum number of TF2 servers that can connect (1-4) [STATIC]
+max_servers = 4
+
+# Timeout before considering a connection dead (ms) [DYNAMIC]
+connection_timeout_ms = 5000
+
+# Interval between heartbeat packets (ms) [DYNAMIC]
+heartbeat_interval_ms = 1000
+
+[sync]
+# How often to sync ghost positions per second (5-60) [DYNAMIC]
+position_sync_rate_hz = 20
+
+# Enable optimistic healing for lower perceived latency [DYNAMIC]
+predictive_healing = true
+
+# Smooth ghost movement between position updates [DYNAMIC]
+ghost_interpolation = true
+
+# Maximum acceptable latency for ghost updates (ms) [DYNAMIC]
+max_ghost_latency_ms = 100
+
+[logging]
+# Log verbosity: trace, debug, info, warn, error [DYNAMIC]
+level = "info"
+
+# Optional file path to write logs (null = disabled) [STATIC]
+# file = "relay.log"
+
+# Log all relayed events [DYNAMIC]
+log_events = true
+
+# Log raw packet data (debug only, high volume) [DYNAMIC]
+log_packets = false
+
+[tui]
+# UI refresh interval in milliseconds [DYNAMIC]
+refresh_rate_ms = 100
+
+# Maximum events to keep in history [DYNAMIC]
+max_event_history = 1000
+
+# TUI color theme: default, dark, light, high_contrast [DYNAMIC]
+color_scheme = "default"
+
+# Show timestamps in event feed [DYNAMIC]
+show_timestamps = true
+
+# Use compact layout for smaller terminals [DYNAMIC]
+compact_mode = false
+
+[relay]
+# Relay chat messages between servers [DYNAMIC]
+broadcast_chat = true
+
+# Relay death events between servers [DYNAMIC]
+broadcast_deaths = true
+
+# Relay player connect/disconnect events [DYNAMIC]
+broadcast_connect = true
+
+# Allow Medics to heal players on other servers [DYNAMIC]
+enable_cross_healing = true
+
+# Allow damage between players on different servers [DYNAMIC]
+enable_cross_damage = true
