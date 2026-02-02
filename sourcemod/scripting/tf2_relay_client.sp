@@ -1271,9 +1271,9 @@ void ProcessRemotePlayerSync(const char[] data, int size, int sourceServerId)
     playerName[nameLen] = '\0';
     offset += nameLen;
 
-    // Read Steam ID (8 bytes - simplified)
+    // Read Steam ID (8 bytes)
     char steamId[32];
-    Format(steamId, sizeof(steamId), "%d_%d", sourceServerId, offset);    // Placeholder
+    ReadU64ToString(data, offset, steamId, sizeof(steamId));
     offset += 8;
 
     // Read team and class
@@ -1357,7 +1357,7 @@ void ProcessRemoteGhostSpawn(const char[] data, int size, int sourceServerId)
     offset += nameLen;
 
     char steamId[32];
-    Format(steamId, sizeof(steamId), "%d_%d", sourceServerId, offset);
+    ReadU64ToString(data, offset, steamId, sizeof(steamId));
     offset += 8;
 
     int team = data[offset];
@@ -1393,7 +1393,7 @@ void ProcessRemoteGhostDespawn(const char[] data, int size, int sourceServerId)
     int  offset = HEADER_SIZE;
 
     char steamId[32];
-    Format(steamId, sizeof(steamId), "%d_%d", sourceServerId, offset);
+    ReadU64ToString(data, offset, steamId, sizeof(steamId));
     offset += 8;
 
     int slot = FindGhostBySteamId(steamId);
