@@ -46,6 +46,8 @@ pub mod player {
 }
 
 /// Gameplay Event IDs (0x30-0x3F)
+/// Note: These are protocol constants, some are reserved for future cross-server features
+#[allow(dead_code)]
 pub mod gameplay {
     pub const PLAYER_HEALED: u8 = 0x30;
     pub const BUILDING_HEALED: u8 = 0x31;
@@ -66,6 +68,7 @@ pub mod gameplay {
 }
 
 /// Game Event IDs (0x40-0x5F)
+#[allow(dead_code)]
 pub mod game {
     pub const ROUND_START: u8 = 0x40;
     pub const ROUND_END: u8 = 0x41;
@@ -74,6 +77,7 @@ pub mod game {
 }
 
 /// Ghost/Cross-Server Event IDs (0x70-0x7F)
+#[allow(dead_code)]
 pub mod ghost {
     pub const PLAYER_SYNC: u8 = 0x70;
     pub const PLAYER_POSITION: u8 = 0x71;

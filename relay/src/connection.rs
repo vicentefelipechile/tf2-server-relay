@@ -365,6 +365,114 @@ impl Connection {
                     relay.broadcast(packet.server_id(), event.clone()).await;
                 }
             }
+            Event::PlayerConnect(pc) => {
+                // Register player with this server for targeted routing
+                relay.register_player(pc.steam_id, packet.server_id()).await;
+                tracing::debug!(
+                    "Registered player {} '{}' with server {}",
+                    pc.steam_id,
+                    pc.player_name,
+                    packet.server_id()
+                );
+
+                // Broadcast to other servers
+                if event.is_broadcastable() {
+                    relay.broadcast(packet.server_id(), event.clone()).await;
+                }
+            }
+            Event::PlayerDisconnect(pd) => {
+                // Unregister player
+                relay.unregister_player(pd.steam_id).await;
+                tracing::debug!(
+                    "Unregistered player {} '{}' from server {}",
+                    pd.steam_id,
+                    pd.player_name,
+                    packet.server_id()
+                );
+
+                // Broadcast to other servers
+                if event.is_broadcastable() {
+                    relay.broadcast(packet.server_id(), event.clone()).await;
+                }
+            }
+            Event::HealRequest(hr) => {
+                // Route heal request to the server that owns the target player
+                if config.relay.enable_cross_healing {
+                    if let Some(target_server) = relay.get_player_server(hr.target_steam_id).await {
+                        if target_server != packet.server_id() {
+                            // Target is on a different server - route directly
+                            if let Err(e) = relay.send_to_server(target_server, event.clone()).await
+                            {
+                                tracing::warn!(
+                                    "Failed to route HealRequest to server {}: {}",
+                                    target_server,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Routed HealRequest from server {} to server {} (target: {})",
+                                    packet.server_id(),
+                                    target_server,
+                                    hr.target_steam_id
+                                );
+                            }
+                        }
+                    } else {
+                        // Target not found - broadcast to all servers
+                        tracing::debug!(
+                            "HealRequest target {} not found, broadcasting",
+                            hr.target_steam_id
+                        );
+                        relay.broadcast(packet.server_id(), event.clone()).await;
+                    }
+                }
+            }
+            Event::HealConfirm(_hc) => {
+                // Route heal confirm back to the healer's server
+                if config.relay.enable_cross_healing {
+                    // Broadcast to all - the healer will recognize the target
+                    relay.broadcast(packet.server_id(), event.clone()).await;
+                }
+            }
+            Event::DamageRequest(dr) => {
+                // Route damage request to the server that owns the victim
+                if config.relay.enable_cross_damage {
+                    if let Some(victim_server) = relay.get_player_server(dr.victim_steam_id).await {
+                        if victim_server != packet.server_id() {
+                            // Victim is on a different server - route directly
+                            if let Err(e) = relay.send_to_server(victim_server, event.clone()).await
+                            {
+                                tracing::warn!(
+                                    "Failed to route DamageRequest to server {}: {}",
+                                    victim_server,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Routed DamageRequest from server {} to server {} (victim: {})",
+                                    packet.server_id(),
+                                    victim_server,
+                                    dr.victim_steam_id
+                                );
+                            }
+                        }
+                    } else {
+                        // Victim not found - broadcast to all servers
+                        tracing::debug!(
+                            "DamageRequest victim {} not found, broadcasting",
+                            dr.victim_steam_id
+                        );
+                        relay.broadcast(packet.server_id(), event.clone()).await;
+                    }
+                }
+            }
+            Event::DamageConfirm(_dc) => {
+                // Route damage confirm back to the attacker's server
+                if config.relay.enable_cross_damage {
+                    // Broadcast to all - the attacker will recognize the victim
+                    relay.broadcast(packet.server_id(), event.clone()).await;
+                }
+            }
             _ => {
                 // Log the event
                 if config.logging.log_events {
