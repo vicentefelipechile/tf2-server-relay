@@ -58,6 +58,11 @@
 #define EVENT_PLAYER_SYNC         0x70
 #define EVENT_GHOST_SPAWN         0x71
 #define EVENT_GHOST_DESPAWN       0x72
+#define EVENT_HEAL_REQUEST        0x73
+#define EVENT_HEAL_CONFIRM        0x74
+#define EVENT_UBER_SHARE          0x75
+#define EVENT_DAMAGE_REQUEST      0x76
+#define EVENT_DAMAGE_CONFIRM      0x77
 
 // ============================================================================
 // Ghost System Constants
@@ -145,6 +150,7 @@ ConVar      g_cvEnabled;
 ConVar      g_cvGhostEnabled;
 ConVar      g_cvGhostGlow;
 ConVar      g_cvGhostAlpha;
+ConVar      g_cvDebug;
 
 // Socket
 AsyncSocket g_hSocket;
@@ -160,7 +166,8 @@ int         g_iSequence;
 // Reconnect timer
 Handle      g_hReconnectTimer;
 Handle      g_hSyncTimer;
-Handle      g_hGhostUpdateTimer;
+// FUTURE: Timer handle for smooth ghost interpolation updates
+// Handle      g_hGhostUpdateTimer;
 
 // CRC-8 lookup table
 int         g_iCRC8Table[256];
@@ -187,6 +194,7 @@ public void OnPluginStart()
     g_cvGhostEnabled   = CreateConVar("sm_relay_ghosts", "1", "Enable ghost players from other servers", _, true, 0.0, true, 1.0);
     g_cvGhostGlow      = CreateConVar("sm_relay_ghost_glow", "1", "Enable glow outline on ghosts", _, true, 0.0, true, 1.0);
     g_cvGhostAlpha     = CreateConVar("sm_relay_ghost_alpha", "180", "Ghost transparency (0-255)", _, true, 0.0, true, 255.0);
+    g_cvDebug          = CreateConVar("sm_relay_debug", "0", "Enable debug logging", _, true, 0.0, true, 1.0);
 
     // Auto-execute config
     AutoExecConfig(true, "tf2_relay");
@@ -201,6 +209,11 @@ public void OnPluginStart()
     HookEvent("player_changeclass", Event_PlayerClass);
     HookEvent("teamplay_round_start", Event_RoundStart);
     HookEvent("teamplay_round_win", Event_RoundEnd);
+    HookEvent("player_hurt", Event_PlayerHurt);
+    HookEvent("player_healed", Event_PlayerHealed, EventHookMode_Post);
+    HookEvent("player_builtobject", Event_BuildingBuilt, EventHookMode_Post);
+    HookEvent("object_destroyed", Event_BuildingDestroyed, EventHookMode_Post);
+    HookEvent("player_chargedeployed", Event_UberDeployed, EventHookMode_Post);
 
     // Get current map
     GetCurrentMap(g_sCurrentMap, sizeof(g_sCurrentMap));
@@ -324,6 +337,25 @@ int FindFreeGhostSlot()
     return -1;
 }
 
+int FindGhostByClientIndex(int client)
+{
+    for (int i = 0; i < MAX_GHOSTS; i++)
+    {
+        if (g_Ghosts[i].active && g_Ghosts[i].entityIndex == client)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// FUTURE: Helper function for checking if a client is a ghost
+// Uncomment when implementing ghost collision or interaction checks
+// bool IsGhostClient(int client)
+// {
+//     return FindGhostByClientIndex(client) != -1;
+// }
+
 int CreateGhost(int serverId, const char[] steamId, const char[] playerName, int team, int classId)
 {
     int slot = FindFreeGhostSlot();
@@ -360,64 +392,73 @@ void CreateGhostEntity(int slot)
     if (!g_Ghosts[slot].active)
         return;
 
-    // Get model for class
+    // Create FakeClient for the ghost
+    char botName[128];
+    Format(botName, sizeof(botName), "[S%d] %s", g_Ghosts[slot].serverId, g_Ghosts[slot].playerName);
+
+    int bot = CreateFakeClient(botName);
+    if (bot == 0)
+    {
+        LogError("[Relay] Failed to create FakeClient for ghost");
+        return;
+    }
+
+    // Set up the bot
+    ChangeClientTeam(bot, g_Ghosts[slot].team);
+
+    // Set class
     int classId = g_Ghosts[slot].classId;
     if (classId < 1 || classId > 9)
         classId = 1;    // Default to Scout
 
-    // Create prop_dynamic for the ghost
-    int entity = CreateEntityByName("prop_dynamic_override");
-    if (!IsValidEntity(entity))
-    {
-        LogError("[Relay] Failed to create ghost entity");
-        return;
-    }
+    TF2_SetPlayerClass(bot, view_as<TFClassType>(classId));
 
-    // Set model
-    SetEntityModel(entity, g_sClassModels[classId]);
+    // Make the bot spawn
+    TF2_RespawnPlayer(bot);
 
-    // Set properties
-    DispatchKeyValue(entity, "solid", "0");    // Non-solid
-    DispatchKeyValue(entity, "DefaultAnim", "stand_LOSER");
+    // Set health
+    SetEntityHealth(bot, g_Ghosts[slot].health);
 
-    DispatchSpawn(entity);
-    ActivateEntity(entity);
-
-    // Set render properties for ghost effect
+    // Apply ghost visual effect - translucent
     int alpha = g_cvGhostAlpha.IntValue;
-    SetEntityRenderMode(entity, RENDER_TRANSCOLOR);
+    SetEntityRenderMode(bot, RENDER_TRANSCOLOR);
 
     // Team-based color with transparency
     if (g_Ghosts[slot].team == 2)    // RED
     {
-        SetEntityRenderColor(entity, 255, 100, 100, alpha);
+        SetEntityRenderColor(bot, 255, 150, 150, alpha);
     }
     else if (g_Ghosts[slot].team == 3)    // BLU
     {
-        SetEntityRenderColor(entity, 100, 100, 255, alpha);
+        SetEntityRenderColor(bot, 150, 150, 255, alpha);
     }
     else
     {
-        SetEntityRenderColor(entity, 200, 200, 200, alpha);
+        SetEntityRenderColor(bot, 200, 200, 200, alpha);
     }
 
-    // Position
-    TeleportEntity(entity, g_Ghosts[slot].position, g_Ghosts[slot].angles, NULL_VECTOR);
+    // Position the bot
+    TeleportEntity(bot, g_Ghosts[slot].position, g_Ghosts[slot].angles, NULL_VECTOR);
 
-    // Store reference
-    g_Ghosts[slot].entityIndex = EntIndexToEntRef(entity);
+    // Store the client index as entity reference
+    g_Ghosts[slot].entityIndex = bot;
+
+    // Disable bot AI movement
+    SetEntityMoveType(bot, MOVETYPE_NONE);
 
     // Create glow if enabled
     if (g_cvGhostGlow.BoolValue)
     {
         CreateGhostGlow(slot);
     }
+
+    LogMessage("[Relay] Created FakeClient ghost: %s (client %d)", botName, bot);
 }
 
 void CreateGhostGlow(int slot)
 {
-    int entity = EntRefToEntIndex(g_Ghosts[slot].entityIndex);
-    if (!IsValidEntity(entity))
+    int client = g_Ghosts[slot].entityIndex;
+    if (client <= 0 || client > MaxClients || !IsClientInGame(client))
         return;
 
     int glow = CreateEntityByName("tf_glow");
@@ -442,9 +483,9 @@ void CreateGhostGlow(int slot)
     DispatchSpawn(glow);
     ActivateEntity(glow);
 
-    // Set parent
+    // Set parent to the bot
     SetVariantString("!activator");
-    AcceptEntityInput(glow, "SetParent", entity);
+    AcceptEntityInput(glow, "SetParent", client);
 
     AcceptEntityInput(glow, "Enable");
 
@@ -453,8 +494,8 @@ void CreateGhostGlow(int slot)
 
 void UpdateGhostModel(int slot)
 {
-    int entity = EntRefToEntIndex(g_Ghosts[slot].entityIndex);
-    if (!IsValidEntity(entity))
+    int client = g_Ghosts[slot].entityIndex;
+    if (client <= 0 || client > MaxClients || !IsClientInGame(client))
     {
         CreateGhostEntity(slot);
         return;
@@ -464,7 +505,37 @@ void UpdateGhostModel(int slot)
     if (classId < 1 || classId > 9)
         classId = 1;
 
-    SetEntityModel(entity, g_sClassModels[classId]);
+    // Change class and respawn
+    TF2_SetPlayerClass(client, view_as<TFClassType>(classId));
+    TF2_RespawnPlayer(client);
+
+    // Reapply visual effects
+    int alpha = g_cvGhostAlpha.IntValue;
+    SetEntityRenderMode(client, RENDER_TRANSCOLOR);
+    if (g_Ghosts[slot].team == 2)
+        SetEntityRenderColor(client, 255, 150, 150, alpha);
+    else if (g_Ghosts[slot].team == 3)
+        SetEntityRenderColor(client, 150, 150, 255, alpha);
+    else
+        SetEntityRenderColor(client, 200, 200, 200, alpha);
+}
+
+void UpdateGhostAnimation(int slot, int client)
+{
+    // FakeClients handle animations automatically based on movement
+    // We just need to ensure they're in the right movement state
+
+    if (g_Ghosts[slot].isDucking)
+    {
+        // Set ducking flag
+        SetEntProp(client, Prop_Send, "m_bDucking", 1);
+        SetEntProp(client, Prop_Send, "m_bDucked", 1);
+    }
+    else
+    {
+        SetEntProp(client, Prop_Send, "m_bDucking", 0);
+        SetEntProp(client, Prop_Send, "m_bDucked", 0);
+    }
 }
 
 void UpdateGhostPosition(int slot, float position[3], float angles[3], float velocity[3])
@@ -479,8 +550,8 @@ void UpdateGhostPosition(int slot, float position[3], float angles[3], float vel
     g_Ghosts[slot].lastUpdateTime = GetGameTime();
 
     // If entity doesn't exist, create it
-    int entity                    = EntRefToEntIndex(g_Ghosts[slot].entityIndex);
-    if (!IsValidEntity(entity))
+    int client                    = g_Ghosts[slot].entityIndex;
+    if (client <= 0 || client > MaxClients || !IsClientInGame(client))
     {
         g_Ghosts[slot].position = position;
         g_Ghosts[slot].angles   = angles;
@@ -493,8 +564,8 @@ void InterpolateGhost(int slot, float currentTime)
     if (!g_Ghosts[slot].active)
         return;
 
-    int entity = EntRefToEntIndex(g_Ghosts[slot].entityIndex);
-    if (!IsValidEntity(entity))
+    int client = g_Ghosts[slot].entityIndex;
+    if (client <= 0 || client > MaxClients || !IsClientInGame(client))
         return;
 
     // Simple interpolation factor
@@ -526,8 +597,11 @@ void InterpolateGhost(int slot, float currentTime)
     g_Ghosts[slot].position = newPos;
     g_Ghosts[slot].angles   = newAngles;
 
-    // Apply to entity
-    TeleportEntity(entity, newPos, newAngles, NULL_VECTOR);
+    // Apply to FakeClient
+    TeleportEntity(client, newPos, newAngles, g_Ghosts[slot].velocity);
+
+    // Update animation state (ducking)
+    UpdateGhostAnimation(slot, client);
 }
 
 void RemoveGhost(int slot)
@@ -542,18 +616,18 @@ void RemoveGhost(int slot)
         AcceptEntityInput(glow, "Kill");
     }
 
-    // Remove main entity
-    int entity = EntRefToEntIndex(g_Ghosts[slot].entityIndex);
-    if (IsValidEntity(entity))
+    // Kick the FakeClient
+    int client = g_Ghosts[slot].entityIndex;
+    if (client > 0 && client <= MaxClients && IsClientConnected(client))
     {
-        AcceptEntityInput(entity, "Kill");
+        KickClient(client, "Ghost removed");
     }
 
     LogMessage("[Relay] Removed ghost: %s", g_Ghosts[slot].playerName);
 
     // Clear slot
     g_Ghosts[slot].active      = false;
-    g_Ghosts[slot].entityIndex = INVALID_ENT_REFERENCE;
+    g_Ghosts[slot].entityIndex = 0;
     g_Ghosts[slot].glowEntity  = INVALID_ENT_REFERENCE;
     g_iGhostCount--;
 }
@@ -1253,11 +1327,32 @@ void ProcessIncomingData(const char[] data, int size)
             // Remove all ghosts from disconnected server
             RemoveGhostsByServer(sourceServerId);
         }
+        case EVENT_HEAL_REQUEST:
+        {
+            ProcessRemoteHealRequest(data, size, sourceServerId);
+        }
+        case EVENT_HEAL_CONFIRM:
+        {
+            ProcessRemoteHealConfirm(data, size, sourceServerId);
+        }
+        case EVENT_DAMAGE_REQUEST:
+        {
+            ProcessRemoteDamageRequest(data, size, sourceServerId);
+        }
+        case EVENT_DAMAGE_CONFIRM:
+        {
+            ProcessRemoteDamageConfirm(data, size, sourceServerId);
+        }
+        case EVENT_UBER_SHARE:
+        {
+            ProcessRemoteUberShare(data, size, sourceServerId);
+        }
     }
 }
 
 void ProcessRemotePlayerSync(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size    // Reserved for bounds checking in future
     int  offset = HEADER_SIZE;
 
     // Read player name
@@ -1344,6 +1439,7 @@ void ProcessRemotePlayerSync(const char[] data, int size, int sourceServerId)
 
 void ProcessRemoteGhostSpawn(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size    // Reserved for bounds checking in future
     int  offset = HEADER_SIZE;
 
     char playerName[64];
@@ -1390,6 +1486,7 @@ void ProcessRemoteGhostSpawn(const char[] data, int size, int sourceServerId)
 
 void ProcessRemoteGhostDespawn(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size, sourceServerId    // Reserved for logging and bounds checking
     int  offset = HEADER_SIZE;
 
     char steamId[32];
@@ -1405,6 +1502,7 @@ void ProcessRemoteGhostDespawn(const char[] data, int size, int sourceServerId)
 
 void ProcessRemoteChatMessage(const char[] data, int size)
 {
+#pragma unused size    // Reserved for bounds checking
     int  offset = HEADER_SIZE;
 
     char playerName[64], message[256];
@@ -1443,6 +1541,7 @@ void ProcessRemoteChatMessage(const char[] data, int size)
 
 void ProcessRemotePlayerDeath(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size    // Reserved for bounds checking
     int  offset = HEADER_SIZE;
 
     char victimName[64];
@@ -1470,6 +1569,7 @@ void ProcessRemotePlayerDeath(const char[] data, int size, int sourceServerId)
 
 void ProcessRemotePlayerConnect(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size    // Reserved for bounds checking
     int  offset = HEADER_SIZE;
 
     char playerName[64];
@@ -1487,6 +1587,7 @@ void ProcessRemotePlayerConnect(const char[] data, int size, int sourceServerId)
 
 void ProcessRemotePlayerDisconnect(const char[] data, int size, int sourceServerId)
 {
+#pragma unused size    // Reserved for bounds checking
     int  offset = HEADER_SIZE;
 
     char playerName[64];
@@ -1617,6 +1718,174 @@ public Action Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
     return Plugin_Continue;
 }
 
+public Action Event_PlayerHurt(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int victim   = GetClientOfUserId(event.GetInt("userid"));
+    int attacker = GetClientOfUserId(event.GetInt("attacker"));
+    int damage   = event.GetInt("damageamount");
+
+    // Skip if no valid attacker or no damage
+    if (attacker < 1 || !IsClientInGame(attacker) || damage <= 0)
+        return Plugin_Continue;
+
+    // Skip self-damage
+    if (victim == attacker)
+        return Plugin_Continue;
+
+    // Check if victim is a ghost FakeClient
+    int ghostSlot = FindGhostByClientIndex(victim);
+    if (ghostSlot != -1)
+    {
+        // This is a ghost being damaged - forward to the real player's server
+        char weapon[64];
+        event.GetString("weapon", weapon, sizeof(weapon));
+
+        // Send damage request to the server that owns this player
+        SendDamageRequest(attacker, victim, damage, 0, weapon);
+
+        if (g_cvDebug.BoolValue)
+        {
+            LogMessage("[Relay] Forwarding damage to ghost %s: %d damage from %N",
+                       g_Ghosts[ghostSlot].playerName, damage, attacker);
+        }
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_PlayerHealed(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int patient = event.GetInt("patient");
+    int healer  = event.GetInt("healer");
+    int amount  = event.GetInt("amount");
+
+    if (patient < 1 || healer < 1 || amount <= 0)
+        return Plugin_Continue;
+
+    // Only process if both are valid clients
+    if (!IsClientInGame(patient) || !IsClientInGame(healer))
+        return Plugin_Continue;
+
+    // Check if patient is a ghost FakeClient
+    int ghostSlot = FindGhostByClientIndex(patient);
+    if (ghostSlot != -1)
+    {
+        // This is a ghost being healed - forward to the real player's server
+        SendHealRequest(healer, patient, amount);
+
+        if (g_cvDebug.BoolValue)
+        {
+            LogMessage("[Relay] Forwarding heal to ghost %s: %d HP from %N",
+                       g_Ghosts[ghostSlot].playerName, amount, healer);
+        }
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_BuildingBuilt(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int client = GetClientOfUserId(event.GetInt("userid"));
+    if (client < 1 || !IsClientInGame(client))
+        return Plugin_Continue;
+
+    int objectType = event.GetInt("object");
+    // int index = event.GetInt("index"); // Will be used when sending BUILDING_BUILT event
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Building built: type %d by %N", objectType, client);
+    }
+
+    // TODO: Send BUILDING_BUILT event to relay
+    // Format: builder_steam_id(8) + building_type(1) + building_id(2) + level(1) + position(12)
+
+    return Plugin_Continue;
+}
+
+public Action Event_BuildingDestroyed(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int attacker   = GetClientOfUserId(event.GetInt("attacker"));
+    int objectType = event.GetInt("objecttype");
+
+    if (g_cvDebug.BoolValue)
+    {
+        if (attacker > 0 && IsClientInGame(attacker))
+            LogMessage("[Relay] Building destroyed: type %d by %N", objectType, attacker);
+        else
+            LogMessage("[Relay] Building destroyed: type %d", objectType);
+    }
+
+    // TODO: Send BUILDING_DESTROYED event to relay
+    // Format: owner_steam_id(8) + attacker_steam_id(8) + building_type(1) + building_id(2) + weapon(str) + was_sapped(1)
+
+    return Plugin_Continue;
+}
+
+public Action Event_UberDeployed(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int medic  = GetClientOfUserId(event.GetInt("userid"));
+    int target = GetClientOfUserId(event.GetInt("targetid"));
+
+    if (medic < 1 || !IsClientInGame(medic))
+        return Plugin_Continue;
+
+    if (g_cvDebug.BoolValue)
+    {
+        if (target > 0 && IsClientInGame(target))
+            LogMessage("[Relay] Uber deployed by %N on %N", medic, target);
+        else
+            LogMessage("[Relay] Uber deployed by %N", medic);
+    }
+
+    // Check if target is a ghost - if so, send UBER_SHARE
+    if (target > 0)
+    {
+        int ghostSlot = FindGhostByClientIndex(target);
+        if (ghostSlot != -1)
+        {
+            // Determine uber type from the Medic's current weapon
+            int weapon   = GetPlayerWeaponSlot(medic, 1);    // Secondary slot (medigun)
+            int uberType = 0;                                // Default: Stock Medigun
+            if (weapon > 0)
+            {
+                int defIndex = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+                switch (defIndex)
+                {
+                    case 35: uberType = 1;     // Kritzkrieg
+                    case 411: uberType = 2;    // Quick-Fix
+                    case 998: uberType = 3;    // Vaccinator
+                }
+            }
+
+            // Send UBER_SHARE with 8 second duration (typical uber duration)
+            SendUberShare(medic, target, uberType, 8.0);
+
+            if (g_cvDebug.BoolValue)
+            {
+                LogMessage("[Relay] Forwarding uber type %d to ghost %s", uberType, g_Ghosts[ghostSlot].playerName);
+            }
+        }
+    }
+
+    return Plugin_Continue;
+}
+
 // ============================================================================
 // Timers
 // ============================================================================
@@ -1669,6 +1938,446 @@ public Action Command_ListGhosts(int client, int args)
     }
 
     return Plugin_Handled;
+}
+
+// ============================================================================
+// Cross-Server Interaction Processing
+// ============================================================================
+
+void ProcessRemoteHealRequest(const char[] data, int size, int sourceServerId)
+{
+#pragma unused size    // Reserved for bounds checking
+    // Format: header + healer_steamid(8) + target_steamid(8) + heal_amount(2)
+    int  offset = HEADER_SIZE;
+
+    char healerSteamId[32];
+    ReadU64ToString(data, offset, healerSteamId, sizeof(healerSteamId));
+    offset += 8;
+
+    char targetSteamId[32];
+    ReadU64ToString(data, offset, targetSteamId, sizeof(targetSteamId));
+    offset += 8;
+
+    int healAmount = data[offset] | (data[offset + 1] << 8);
+    offset += 2;
+
+    // Check if target is a local player on this server
+    int targetClient = FindClientBySteamId64(targetSteamId);
+    if (targetClient > 0 && IsPlayerAlive(targetClient))
+    {
+        // Apply heal to local player
+        int newHealth   = GetClientHealth(targetClient) + healAmount;
+        int maxHealth   = GetEntProp(targetClient, Prop_Data, "m_iMaxHealth");
+
+        // Cap at max health (TF2 allows overheal up to 150%)
+        int overHealMax = RoundToFloor(float(maxHealth) * 1.5);
+        if (newHealth > overHealMax)
+            newHealth = overHealMax;
+
+        SetEntityHealth(targetClient, newHealth);
+
+        // Send heal confirmation back
+        SendHealConfirm(targetSteamId, healAmount);
+
+        if (g_cvDebug.BoolValue)
+        {
+            char targetName[64];
+            GetClientName(targetClient, targetName, sizeof(targetName));
+            LogMessage("[Relay] Cross-server heal: %s received %d HP from server %d",
+                       targetName, healAmount, sourceServerId);
+        }
+    }
+    // If target is a ghost, update ghost health
+    else
+    {
+        int ghostSlot = FindGhostBySteamId(targetSteamId);
+        if (ghostSlot != -1)
+        {
+            g_Ghosts[ghostSlot].health += healAmount;
+            // Cap ghost health (simplified)
+            if (g_Ghosts[ghostSlot].health > 450)
+                g_Ghosts[ghostSlot].health = 450;
+        }
+    }
+}
+
+void ProcessRemoteHealConfirm(const char[] data, int size, int sourceServerId)
+{
+#pragma unused size, sourceServerId    // Reserved for bounds checking and logging
+    // Format: header + target_steamid(8) + actual_heal(2)
+    int  offset = HEADER_SIZE;
+
+    char targetSteamId[32];
+    ReadU64ToString(data, offset, targetSteamId, sizeof(targetSteamId));
+    offset += 8;
+
+    int actualHeal = data[offset] | (data[offset + 1] << 8);
+
+    // Find the ghost being healed and update their health display
+    int ghostSlot  = FindGhostBySteamId(targetSteamId);
+    if (ghostSlot != -1)
+    {
+        g_Ghosts[ghostSlot].health += actualHeal;
+        if (g_Ghosts[ghostSlot].health > 450)
+            g_Ghosts[ghostSlot].health = 450;
+
+        if (g_cvDebug.BoolValue)
+        {
+            LogMessage("[Relay] Heal confirmed: %s +%d HP (Server %d)",
+                       g_Ghosts[ghostSlot].playerName, actualHeal, sourceServerId);
+        }
+    }
+}
+
+void ProcessRemoteDamageRequest(const char[] data, int size, int sourceServerId)
+{
+#pragma unused size    // Reserved for bounds checking
+    // Format: header + attacker_steamid(8) + victim_steamid(8) + damage(2) + damage_type(4) + weapon_name_len(1) + weapon_name
+    int  offset = HEADER_SIZE;
+
+    char attackerSteamId[32];
+    ReadU64ToString(data, offset, attackerSteamId, sizeof(attackerSteamId));
+    offset += 8;
+
+    char victimSteamId[32];
+    ReadU64ToString(data, offset, victimSteamId, sizeof(victimSteamId));
+    offset += 8;
+
+    int damage = data[offset] | (data[offset + 1] << 8);
+    offset += 2;
+
+    int damageType = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+    offset += 4;
+
+    int weaponLen = data[offset];
+    offset++;
+
+    char weaponName[64];
+    for (int i = 0; i < weaponLen && i < 63; i++)
+    {
+        weaponName[i] = data[offset + i];
+    }
+    weaponName[weaponLen] = '\0';
+    offset += weaponLen;
+
+    // Check if victim is a local player on this server
+    int victimClient = FindClientBySteamId64(victimSteamId);
+    if (victimClient > 0 && IsPlayerAlive(victimClient))
+    {
+        // Apply damage to local player
+        int currentHealth = GetClientHealth(victimClient);
+        int newHealth     = currentHealth - damage;
+
+        if (newHealth <= 0)
+        {
+            // Kill the player
+            ForcePlayerSuicide(victimClient);
+
+            // Send damage confirm with kill flag
+            SendDamageConfirm(victimSteamId, damage, true);
+        }
+        else
+        {
+            SetEntityHealth(victimClient, newHealth);
+            SendDamageConfirm(victimSteamId, damage, false);
+
+            // Apply special damage effects based on damageType
+            ApplyDamageEffects(victimClient, damageType);
+        }
+
+        if (g_cvDebug.BoolValue)
+        {
+            char victimName[64];
+            GetClientName(victimClient, victimName, sizeof(victimName));
+            LogMessage("[Relay] Cross-server damage: %s took %d damage (type 0x%08X) from server %d (%s)",
+                       victimName, damage, damageType, sourceServerId, weaponName);
+        }
+    }
+    // If victim is a ghost, update ghost health
+    else
+    {
+        int ghostSlot = FindGhostBySteamId(victimSteamId);
+        if (ghostSlot != -1)
+        {
+            g_Ghosts[ghostSlot].health -= damage;
+            if (g_Ghosts[ghostSlot].health < 0)
+                g_Ghosts[ghostSlot].health = 0;
+        }
+    }
+}
+
+// Apply special damage effects based on Source Engine damage type flags
+void ApplyDamageEffects(int client, int damageType)
+{
+    // DMG_BURN (8) - Fire damage, apply afterburn
+    if (damageType & (1 << 3))
+    {
+        TF2_IgnitePlayer(client, client, 5.0);
+    }
+
+    // DMG_SLASH (4) - Bleed damage
+    if (damageType & (1 << 2))
+    {
+        TF2_MakeBleed(client, client, 5.0);
+    }
+
+    // DMG_BLAST (64) - Explosion knockback indicator
+    if (damageType & (1 << 6))
+    {
+        // Screen shake for explosion damage
+        Handle msg = StartMessageOne("Shake", client, USERMSG_RELIABLE);
+        if (msg != null)
+        {
+            BfWriteByte(msg, 0);       // Command
+            BfWriteFloat(msg, 5.0);    // Amplitude
+            BfWriteFloat(msg, 1.0);    // Frequency
+            BfWriteFloat(msg, 0.5);    // Duration
+            EndMessage();
+        }
+    }
+
+    // DMG_ACID (1048576) - Mad Milk/Jarate effect
+    if (damageType & (1 << 20))
+    {
+        TF2_AddCondition(client, TFCond_Jarated, 5.0);
+    }
+}
+
+void ProcessRemoteDamageConfirm(const char[] data, int size, int sourceServerId)
+{
+#pragma unused size, sourceServerId    // Reserved for bounds checking and logging
+    // Format: header + victim_steamid(8) + actual_damage(2) + killed(1)
+    int  offset = HEADER_SIZE;
+
+    char victimSteamId[32];
+    ReadU64ToString(data, offset, victimSteamId, sizeof(victimSteamId));
+    offset += 8;
+
+    int actualDamage = data[offset] | (data[offset + 1] << 8);
+    offset += 2;
+
+    bool killed    = data[offset] != 0;
+
+    // Find the ghost and update their state
+    int  ghostSlot = FindGhostBySteamId(victimSteamId);
+    if (ghostSlot != -1)
+    {
+        g_Ghosts[ghostSlot].health -= actualDamage;
+        if (g_Ghosts[ghostSlot].health < 0)
+            g_Ghosts[ghostSlot].health = 0;
+
+        if (killed)
+        {
+            // Ghost was killed - could trigger death animation
+            if (g_cvDebug.BoolValue)
+            {
+                LogMessage("[Relay] Ghost killed: %s (Server %d)",
+                           g_Ghosts[ghostSlot].playerName, sourceServerId);
+            }
+        }
+    }
+}
+
+void ProcessRemoteUberShare(const char[] data, int size, int sourceServerId)
+{
+#pragma unused size    // Reserved for bounds checking
+    // Format: header + medic_steamid(8) + target_steamid(8) + uber_type(1) + duration(4)
+    int  offset = HEADER_SIZE;
+
+    char medicSteamId[32];
+    ReadU64ToString(data, offset, medicSteamId, sizeof(medicSteamId));
+    offset += 8;
+
+    char targetSteamId[32];
+    ReadU64ToString(data, offset, targetSteamId, sizeof(targetSteamId));
+    offset += 8;
+
+    int uberType = data[offset];
+    offset++;
+
+    float duration     = ReadFloat(data, offset);
+
+    // Check if target is a local player
+    int   targetClient = FindClientBySteamId64(targetSteamId);
+    if (targetClient > 0 && IsPlayerAlive(targetClient))
+    {
+        // Apply uber effect based on type
+        switch (uberType)
+        {
+            case 0:    // Standard uber (invulnerability)
+            {
+                TF2_AddCondition(targetClient, TFCond_Ubercharged, duration);
+            }
+            case 1:    // Kritzkrieg
+            {
+                TF2_AddCondition(targetClient, TFCond_Kritzkrieged, duration);
+            }
+            case 2:    // Quick-Fix
+            {
+                TF2_AddCondition(targetClient, TFCond_MegaHeal, duration);
+            }
+            case 3:    // Vaccinator (resistance)
+            {
+                // Simplified - just add bullet resistance
+                TF2_AddCondition(targetClient, TFCond_UberBulletResist, duration);
+            }
+        }
+
+        if (g_cvDebug.BoolValue)
+        {
+            char targetName[64];
+            GetClientName(targetClient, targetName, sizeof(targetName));
+            LogMessage("[Relay] Cross-server uber: %s received uber type %d from server %d",
+                       targetName, uberType, sourceServerId);
+        }
+    }
+}
+
+// ============================================================================
+// Cross-Server Interaction Senders
+// ============================================================================
+
+void SendHealConfirm(const char[] targetSteamId, int actualHeal)
+{
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    // Build payload: target_steamid(8) + actual_heal(2)
+    offset += WriteU64(buffer, offset, targetSteamId);
+    buffer[offset++] = actualHeal & 0xFF;
+    buffer[offset++] = (actualHeal >> 8) & 0xFF;
+
+    int payloadLen   = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_HEAL_CONFIRM, payloadLen);
+    SendPacket(buffer, offset);
+}
+
+void SendDamageConfirm(const char[] victimSteamId, int actualDamage, bool killed)
+{
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    // Build payload: victim_steamid(8) + actual_damage(2) + killed(1)
+    offset += WriteU64(buffer, offset, victimSteamId);
+    buffer[offset++] = actualDamage & 0xFF;
+    buffer[offset++] = (actualDamage >> 8) & 0xFF;
+    buffer[offset++] = killed ? 1 : 0;
+
+    int payloadLen   = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_DAMAGE_CONFIRM, payloadLen);
+    SendPacket(buffer, offset);
+}
+
+void SendHealRequest(int healer, int target, int healAmount)
+{
+    char healerSteamId[32], targetSteamId[32];
+    GetClientAuthId(healer, AuthId_SteamID64, healerSteamId, sizeof(healerSteamId));
+    GetClientAuthId(target, AuthId_SteamID64, targetSteamId, sizeof(targetSteamId));
+
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    // Build payload: healer_steamid(8) + target_steamid(8) + heal_amount(2)
+    offset += WriteU64(buffer, offset, healerSteamId);
+    offset += WriteU64(buffer, offset, targetSteamId);
+    buffer[offset++] = healAmount & 0xFF;
+    buffer[offset++] = (healAmount >> 8) & 0xFF;
+
+    int payloadLen   = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_HEAL_REQUEST, payloadLen);
+    SendPacket(buffer, offset);
+}
+
+void SendDamageRequest(int attacker, int victim, int damage, int damageType, const char[] weaponName)
+{
+    char attackerSteamId[32], victimSteamId[32];
+    GetClientAuthId(attacker, AuthId_SteamID64, attackerSteamId, sizeof(attackerSteamId));
+    GetClientAuthId(victim, AuthId_SteamID64, victimSteamId, sizeof(victimSteamId));
+
+    char buffer[128];
+    int  offset = HEADER_SIZE;
+
+    // Build payload: attacker_steamid(8) + victim_steamid(8) + damage(2) + damage_type(4) + weapon_name_len(1) + weapon_name
+    offset += WriteU64(buffer, offset, attackerSteamId);
+    offset += WriteU64(buffer, offset, victimSteamId);
+    buffer[offset++] = damage & 0xFF;
+    buffer[offset++] = (damage >> 8) & 0xFF;
+    buffer[offset++] = damageType & 0xFF;
+    buffer[offset++] = (damageType >> 8) & 0xFF;
+    buffer[offset++] = (damageType >> 16) & 0xFF;
+    buffer[offset++] = (damageType >> 24) & 0xFF;
+
+    int weaponLen    = strlen(weaponName);
+    if (weaponLen > 63) weaponLen = 63;
+    buffer[offset++] = weaponLen;
+    for (int i = 0; i < weaponLen; i++)
+    {
+        buffer[offset++] = weaponName[i];
+    }
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_DAMAGE_REQUEST, payloadLen);
+    SendPacket(buffer, offset);
+}
+
+// Helper to find client by Steam64 ID
+int FindClientBySteamId64(const char[] steamId64)
+{
+    char clientSteamId[32];
+    for (int i = 1; i <= MaxClients; i++)
+    {
+        if (IsClientInGame(i) && !IsFakeClient(i))
+        {
+            GetClientAuthId(i, AuthId_SteamID64, clientSteamId, sizeof(clientSteamId));
+            if (StrEqual(steamId64, clientSteamId))
+            {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+void SendUberShare(int medic, int target, int uberType, float duration)
+{
+    char medicSteamId[32], targetSteamId[32];
+    GetClientAuthId(medic, AuthId_SteamID64, medicSteamId, sizeof(medicSteamId));
+
+    // For ghosts, get their stored Steam ID
+    int ghostSlot = FindGhostByClientIndex(target);
+    if (ghostSlot != -1)
+    {
+        strcopy(targetSteamId, sizeof(targetSteamId), g_Ghosts[ghostSlot].steamId);
+    }
+    else
+    {
+        GetClientAuthId(target, AuthId_SteamID64, targetSteamId, sizeof(targetSteamId));
+    }
+
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    // Build payload: medic_steamid(8) + target_steamid(8) + uber_type(1) + duration(4)
+    offset += WriteU64(buffer, offset, medicSteamId);
+    offset += WriteU64(buffer, offset, targetSteamId);
+    buffer[offset++] = uberType;
+
+    // Write duration as float (4 bytes)
+    int durationBits = view_as<int>(duration);
+    buffer[offset++] = durationBits & 0xFF;
+    buffer[offset++] = (durationBits >> 8) & 0xFF;
+    buffer[offset++] = (durationBits >> 16) & 0xFF;
+    buffer[offset++] = (durationBits >> 24) & 0xFF;
+
+    int payloadLen   = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_UBER_SHARE, payloadLen);
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent UBER_SHARE: medic=%s target=%s type=%d duration=%.2f",
+                   medicSteamId, targetSteamId, uberType, duration);
+    }
 }
 
 // ============================================================================
