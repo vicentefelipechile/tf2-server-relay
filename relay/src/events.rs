@@ -47,7 +47,6 @@ pub mod player {
 
 /// Gameplay Event IDs (0x30-0x3F)
 /// Note: These are protocol constants, some are reserved for future cross-server features
-#[allow(dead_code)]
 pub mod gameplay {
     pub const PLAYER_HEALED: u8 = 0x30;
     pub const BUILDING_HEALED: u8 = 0x31;
@@ -68,7 +67,6 @@ pub mod gameplay {
 }
 
 /// Game Event IDs (0x40-0x5F)
-#[allow(dead_code)]
 pub mod game {
     pub const ROUND_START: u8 = 0x40;
     pub const ROUND_END: u8 = 0x41;
@@ -77,7 +75,6 @@ pub mod game {
 }
 
 /// Ghost/Cross-Server Event IDs (0x70-0x7F)
-#[allow(dead_code)]
 pub mod ghost {
     pub const PLAYER_SYNC: u8 = 0x70;
     pub const PLAYER_POSITION: u8 = 0x71;
@@ -214,14 +211,27 @@ pub enum Event {
 
     // Gameplay events
     PlayerHealed(PlayerHealedEvent),
+    BuildingHealed(BuildingHealedEvent),
     PlayerHurt(PlayerHurtEvent),
     UberDeployed(UberDeployedEvent),
+    PlayerInvulned(PlayerInvulnedEvent),
     PlayerSpawn(PlayerSpawnEvent),
+    BuildingBuilt(BuildingBuiltEvent),
+    BuildingDestroyed(BuildingDestroyedEvent),
+    BuildingSapped(BuildingSappedEvent),
+    ProjectileDeflected(ProjectileDeflectedEvent),
+    PlayerIgnited(PlayerIgnitedEvent),
+    PlayerExtinguished(PlayerExtinguishedEvent),
+    PlayerJarated(PlayerJaratedEvent),
+    PlayerTeleported(PlayerTeleportedEvent),
+    MedicDeath(MedicDeathEvent),
+    SentryAttack(SentryAttackEvent),
 
     // Game events
     RoundStart(RoundStartEvent),
     RoundEnd(RoundEndEvent),
     MapChange(MapChangeEvent),
+    GameModeInfo(GameModeInfoEvent),
 
     // Ghost/Cross-server events
     PlayerSync(PlayerSyncEvent),
@@ -231,6 +241,7 @@ pub enum Event {
     HealConfirm(HealConfirmEvent),
     DamageRequest(DamageRequestEvent),
     DamageConfirm(DamageConfirmEvent),
+    UberShare(UberShareEvent),
 
     /// Unknown event type (for forward compatibility).
     Unknown {
@@ -258,12 +269,25 @@ impl Event {
             Event::PlayerTeamChange(_) => player::PLAYER_TEAM_CHANGE,
             Event::PlayerClassChange(_) => player::PLAYER_CLASS_CHANGE,
             Event::PlayerHealed(_) => gameplay::PLAYER_HEALED,
+            Event::BuildingHealed(_) => gameplay::BUILDING_HEALED,
             Event::PlayerHurt(_) => gameplay::PLAYER_HURT,
             Event::UberDeployed(_) => gameplay::UBER_DEPLOYED,
+            Event::PlayerInvulned(_) => gameplay::PLAYER_INVULNED,
             Event::PlayerSpawn(_) => gameplay::PLAYER_SPAWN,
+            Event::BuildingBuilt(_) => gameplay::BUILDING_BUILT,
+            Event::BuildingDestroyed(_) => gameplay::BUILDING_DESTROYED,
+            Event::BuildingSapped(_) => gameplay::BUILDING_SAPPED,
+            Event::ProjectileDeflected(_) => gameplay::PROJECTILE_DEFLECTED,
+            Event::PlayerIgnited(_) => gameplay::PLAYER_IGNITED,
+            Event::PlayerExtinguished(_) => gameplay::PLAYER_EXTINGUISHED,
+            Event::PlayerJarated(_) => gameplay::PLAYER_JARATED,
+            Event::PlayerTeleported(_) => gameplay::PLAYER_TELEPORTED,
+            Event::MedicDeath(_) => gameplay::MEDIC_DEATH,
+            Event::SentryAttack(_) => gameplay::SENTRY_ATTACK,
             Event::RoundStart(_) => game::ROUND_START,
             Event::RoundEnd(_) => game::ROUND_END,
             Event::MapChange(_) => game::MAP_CHANGE,
+            Event::GameModeInfo(_) => game::GAME_MODE_INFO,
             Event::PlayerSync(_) => ghost::PLAYER_SYNC,
             Event::PlayerPosition(_) => ghost::PLAYER_POSITION,
             Event::GhostRemove(_) => ghost::GHOST_REMOVE,
@@ -271,6 +295,7 @@ impl Event {
             Event::HealConfirm(_) => ghost::HEAL_CONFIRM,
             Event::DamageRequest(_) => ghost::DAMAGE_REQUEST,
             Event::DamageConfirm(_) => ghost::DAMAGE_CONFIRM,
+            Event::UberShare(_) => ghost::UBER_SHARE,
             Event::Unknown { event_type, .. } => *event_type,
         }
     }
@@ -306,13 +331,40 @@ impl Event {
             }
 
             gameplay::PLAYER_HEALED => Event::PlayerHealed(PlayerHealedEvent::parse(&mut buf)?),
+            gameplay::BUILDING_HEALED => {
+                Event::BuildingHealed(BuildingHealedEvent::parse(&mut buf)?)
+            }
             gameplay::PLAYER_HURT => Event::PlayerHurt(PlayerHurtEvent::parse(&mut buf)?),
             gameplay::UBER_DEPLOYED => Event::UberDeployed(UberDeployedEvent::parse(&mut buf)?),
+            gameplay::PLAYER_INVULNED => {
+                Event::PlayerInvulned(PlayerInvulnedEvent::parse(&mut buf)?)
+            }
             gameplay::PLAYER_SPAWN => Event::PlayerSpawn(PlayerSpawnEvent::parse(&mut buf)?),
+            gameplay::BUILDING_BUILT => Event::BuildingBuilt(BuildingBuiltEvent::parse(&mut buf)?),
+            gameplay::BUILDING_DESTROYED => {
+                Event::BuildingDestroyed(BuildingDestroyedEvent::parse(&mut buf)?)
+            }
+            gameplay::BUILDING_SAPPED => {
+                Event::BuildingSapped(BuildingSappedEvent::parse(&mut buf)?)
+            }
+            gameplay::PROJECTILE_DEFLECTED => {
+                Event::ProjectileDeflected(ProjectileDeflectedEvent::parse(&mut buf)?)
+            }
+            gameplay::PLAYER_IGNITED => Event::PlayerIgnited(PlayerIgnitedEvent::parse(&mut buf)?),
+            gameplay::PLAYER_EXTINGUISHED => {
+                Event::PlayerExtinguished(PlayerExtinguishedEvent::parse(&mut buf)?)
+            }
+            gameplay::PLAYER_JARATED => Event::PlayerJarated(PlayerJaratedEvent::parse(&mut buf)?),
+            gameplay::PLAYER_TELEPORTED => {
+                Event::PlayerTeleported(PlayerTeleportedEvent::parse(&mut buf)?)
+            }
+            gameplay::MEDIC_DEATH => Event::MedicDeath(MedicDeathEvent::parse(&mut buf)?),
+            gameplay::SENTRY_ATTACK => Event::SentryAttack(SentryAttackEvent::parse(&mut buf)?),
 
             game::ROUND_START => Event::RoundStart(RoundStartEvent::parse(&mut buf)?),
             game::ROUND_END => Event::RoundEnd(RoundEndEvent::parse(&mut buf)?),
             game::MAP_CHANGE => Event::MapChange(MapChangeEvent::parse(&mut buf)?),
+            game::GAME_MODE_INFO => Event::GameModeInfo(GameModeInfoEvent::parse(&mut buf)?),
 
             ghost::PLAYER_SYNC => Event::PlayerSync(PlayerSyncEvent::parse(&mut buf)?),
             ghost::PLAYER_POSITION => Event::PlayerPosition(PlayerPositionEvent::parse(&mut buf)?),
@@ -321,6 +373,7 @@ impl Event {
             ghost::HEAL_CONFIRM => Event::HealConfirm(HealConfirmEvent::parse(&mut buf)?),
             ghost::DAMAGE_REQUEST => Event::DamageRequest(DamageRequestEvent::parse(&mut buf)?),
             ghost::DAMAGE_CONFIRM => Event::DamageConfirm(DamageConfirmEvent::parse(&mut buf)?),
+            ghost::UBER_SHARE => Event::UberShare(UberShareEvent::parse(&mut buf)?),
 
             _ => Event::Unknown {
                 event_type,
@@ -351,12 +404,25 @@ impl Event {
             Event::PlayerTeamChange(e) => e.serialize(&mut buf),
             Event::PlayerClassChange(e) => e.serialize(&mut buf),
             Event::PlayerHealed(e) => e.serialize(&mut buf),
+            Event::BuildingHealed(e) => e.serialize(&mut buf),
             Event::PlayerHurt(e) => e.serialize(&mut buf),
             Event::UberDeployed(e) => e.serialize(&mut buf),
+            Event::PlayerInvulned(e) => e.serialize(&mut buf),
             Event::PlayerSpawn(e) => e.serialize(&mut buf),
+            Event::BuildingBuilt(e) => e.serialize(&mut buf),
+            Event::BuildingDestroyed(e) => e.serialize(&mut buf),
+            Event::BuildingSapped(e) => e.serialize(&mut buf),
+            Event::ProjectileDeflected(e) => e.serialize(&mut buf),
+            Event::PlayerIgnited(e) => e.serialize(&mut buf),
+            Event::PlayerExtinguished(e) => e.serialize(&mut buf),
+            Event::PlayerJarated(e) => e.serialize(&mut buf),
+            Event::PlayerTeleported(e) => e.serialize(&mut buf),
+            Event::MedicDeath(e) => e.serialize(&mut buf),
+            Event::SentryAttack(e) => e.serialize(&mut buf),
             Event::RoundStart(e) => e.serialize(&mut buf),
             Event::RoundEnd(e) => e.serialize(&mut buf),
             Event::MapChange(e) => e.serialize(&mut buf),
+            Event::GameModeInfo(e) => e.serialize(&mut buf),
             Event::PlayerSync(e) => e.serialize(&mut buf),
             Event::PlayerPosition(e) => e.serialize(&mut buf),
             Event::GhostRemove(e) => e.serialize(&mut buf),
@@ -364,6 +430,7 @@ impl Event {
             Event::HealConfirm(e) => e.serialize(&mut buf),
             Event::DamageRequest(e) => e.serialize(&mut buf),
             Event::DamageConfirm(e) => e.serialize(&mut buf),
+            Event::UberShare(e) => e.serialize(&mut buf),
             Event::Unknown { payload, .. } => buf.extend_from_slice(payload),
         }
 
@@ -408,12 +475,31 @@ impl Event {
                 TfClass::from_u8(e.new_class)
             ),
             Event::PlayerHealed(e) => format!("Player healed for {} HP", e.amount),
+            Event::BuildingHealed(e) => format!("Building healed for {} HP", e.heal_amount),
             Event::PlayerHurt(e) => format!("Player took {} damage", e.damage_amount),
             Event::UberDeployed(_) => "Über deployed!".to_string(),
+            Event::PlayerInvulned(_) => "Player became invulnerable".to_string(),
             Event::PlayerSpawn(e) => format!("Player spawned as {}", TfClass::from_u8(e.class)),
+            Event::BuildingBuilt(e) => format!(
+                "Building type {} built (level {})",
+                e.building_type, e.level
+            ),
+            Event::BuildingDestroyed(e) => format!("Building type {} destroyed", e.building_type),
+            Event::BuildingSapped(e) => format!("Building type {} sapped", e.building_type),
+            Event::ProjectileDeflected(_) => "Projectile deflected".to_string(),
+            Event::PlayerIgnited(_) => "Player ignited".to_string(),
+            Event::PlayerExtinguished(_) => "Player extinguished".to_string(),
+            Event::PlayerJarated(_) => "Player jarated".to_string(),
+            Event::PlayerTeleported(e) => format!("Player teleported {:.0} units", e.distance),
+            Event::MedicDeath(e) => format!("Medic dropped (had uber: {})", e.had_uber),
+            Event::SentryAttack(e) => format!(
+                "Sentry #{} (lvl {}) attacked target",
+                e.sentry_id, e.sentry_level
+            ),
             Event::RoundStart(e) => format!("Round {} started on {}", e.round_number, e.map_name),
             Event::RoundEnd(e) => format!("Round ended - {} wins!", Team::from_u8(e.winning_team)),
             Event::MapChange(e) => format!("Map change: {} → {}", e.old_map, e.new_map),
+            Event::GameModeInfo(e) => format!("Game mode: {} on {}", e.game_mode, e.map_name),
             Event::PlayerSync(_) => "Player sync".to_string(),
             Event::PlayerPosition(_) => "Position update".to_string(),
             Event::GhostRemove(_) => "Ghost removed".to_string(),
@@ -421,6 +507,7 @@ impl Event {
             Event::HealConfirm(e) => format!("Heal confirmed: {} HP applied", e.heal_applied),
             Event::DamageRequest(e) => format!("Damage request: {} HP", e.damage_amount),
             Event::DamageConfirm(e) => format!("Damage confirmed: {} HP applied", e.damage_applied),
+            Event::UberShare(_) => "Über shared cross-server".to_string(),
             Event::Unknown { event_type, .. } => format!("Unknown event 0x{:02X}", event_type),
         }
     }
@@ -1108,6 +1195,467 @@ impl PlayerSpawnEvent {
         buf.put_u64_le(self.player_steam_id);
         buf.put_u8(self.team);
         buf.put_u8(self.class);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingBuiltEvent {
+    pub builder_steam_id: u64,
+    pub building_type: u8,
+    pub building_id: u16,
+    pub level: u8,
+    pub position_x: f32,
+    pub position_y: f32,
+    pub position_z: f32,
+}
+
+impl BuildingBuiltEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 24 {
+            return Err(RelayError::MalformedPacket {
+                reason: "BuildingBuilt too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            builder_steam_id: buf.get_u64_le(),
+            building_type: buf.get_u8(),
+            building_id: buf.get_u16_le(),
+            level: buf.get_u8(),
+            position_x: buf.get_f32_le(),
+            position_y: buf.get_f32_le(),
+            position_z: buf.get_f32_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.builder_steam_id);
+        buf.put_u8(self.building_type);
+        buf.put_u16_le(self.building_id);
+        buf.put_u8(self.level);
+        buf.put_f32_le(self.position_x);
+        buf.put_f32_le(self.position_y);
+        buf.put_f32_le(self.position_z);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingDestroyedEvent {
+    pub owner_steam_id: u64,
+    pub attacker_steam_id: u64,
+    pub building_type: u8,
+    pub building_id: u16,
+    pub weapon: String,
+    pub was_sapped: bool,
+}
+
+impl BuildingDestroyedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 19 {
+            return Err(RelayError::MalformedPacket {
+                reason: "BuildingDestroyed too short".to_string(),
+            });
+        }
+
+        let owner_steam_id = buf.get_u64_le();
+        let attacker_steam_id = buf.get_u64_le();
+        let building_type = buf.get_u8();
+        let building_id = buf.get_u16_le();
+        let weapon = read_string(buf)?;
+
+        if buf.remaining() < 1 {
+            return Err(RelayError::MalformedPacket {
+                reason: "BuildingDestroyed missing was_sapped".to_string(),
+            });
+        }
+        let was_sapped = buf.get_u8() != 0;
+
+        Ok(Self {
+            owner_steam_id,
+            attacker_steam_id,
+            building_type,
+            building_id,
+            weapon,
+            was_sapped,
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.owner_steam_id);
+        buf.put_u64_le(self.attacker_steam_id);
+        buf.put_u8(self.building_type);
+        buf.put_u16_le(self.building_id);
+        write_string(buf, &self.weapon);
+        buf.put_u8(if self.was_sapped { 1 } else { 0 });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingSappedEvent {
+    pub spy_steam_id: u64,
+    pub owner_steam_id: u64,
+    pub building_type: u8,
+    pub sapper_id: u16,
+}
+
+impl BuildingSappedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 19 {
+            return Err(RelayError::MalformedPacket {
+                reason: "BuildingSapped too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            spy_steam_id: buf.get_u64_le(),
+            owner_steam_id: buf.get_u64_le(),
+            building_type: buf.get_u8(),
+            sapper_id: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.spy_steam_id);
+        buf.put_u64_le(self.owner_steam_id);
+        buf.put_u8(self.building_type);
+        buf.put_u16_le(self.sapper_id);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerIgnitedEvent {
+    pub victim_steam_id: u64,
+    pub pyro_steam_id: u64,
+    pub weapon_id: u16,
+}
+
+impl PlayerIgnitedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 18 {
+            return Err(RelayError::MalformedPacket {
+                reason: "PlayerIgnited too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            victim_steam_id: buf.get_u64_le(),
+            pyro_steam_id: buf.get_u64_le(),
+            weapon_id: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.victim_steam_id);
+        buf.put_u64_le(self.pyro_steam_id);
+        buf.put_u16_le(self.weapon_id);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerJaratedEvent {
+    pub victim_steam_id: u64,
+    pub thrower_steam_id: u64,
+}
+
+impl PlayerJaratedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 16 {
+            return Err(RelayError::MalformedPacket {
+                reason: "PlayerJarated too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            victim_steam_id: buf.get_u64_le(),
+            thrower_steam_id: buf.get_u64_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.victim_steam_id);
+        buf.put_u64_le(self.thrower_steam_id);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerTeleportedEvent {
+    pub player_steam_id: u64,
+    pub builder_steam_id: u64,
+    pub distance: f32,
+}
+
+impl PlayerTeleportedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 20 {
+            return Err(RelayError::MalformedPacket {
+                reason: "PlayerTeleported too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            player_steam_id: buf.get_u64_le(),
+            builder_steam_id: buf.get_u64_le(),
+            distance: buf.get_f32_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.player_steam_id);
+        buf.put_u64_le(self.builder_steam_id);
+        buf.put_f32_le(self.distance);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MedicDeathEvent {
+    pub medic_steam_id: u64,
+    pub attacker_steam_id: u64,
+    pub healing_done: u16,
+    pub had_uber: bool,
+}
+
+impl MedicDeathEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 19 {
+            return Err(RelayError::MalformedPacket {
+                reason: "MedicDeath too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            medic_steam_id: buf.get_u64_le(),
+            attacker_steam_id: buf.get_u64_le(),
+            healing_done: buf.get_u16_le(),
+            had_uber: buf.get_u8() != 0,
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.medic_steam_id);
+        buf.put_u64_le(self.attacker_steam_id);
+        buf.put_u16_le(self.healing_done);
+        buf.put_u8(if self.had_uber { 1 } else { 0 });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UberShareEvent {
+    pub medic_steam_id: u64,
+    pub target_steam_id: u64,
+    pub uber_type: u8,
+    pub duration_ms: u16,
+}
+
+impl UberShareEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 19 {
+            return Err(RelayError::MalformedPacket {
+                reason: "UberShare too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            medic_steam_id: buf.get_u64_le(),
+            target_steam_id: buf.get_u64_le(),
+            uber_type: buf.get_u8(),
+            duration_ms: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.medic_steam_id);
+        buf.put_u64_le(self.target_steam_id);
+        buf.put_u8(self.uber_type);
+        buf.put_u16_le(self.duration_ms);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingHealedEvent {
+    pub healer_steam_id: u64,
+    pub building_type: u8,
+    pub building_id: u16,
+    pub heal_amount: u16,
+}
+
+impl BuildingHealedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 13 {
+            return Err(RelayError::MalformedPacket {
+                reason: "BuildingHealed too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            healer_steam_id: buf.get_u64_le(),
+            building_type: buf.get_u8(),
+            building_id: buf.get_u16_le(),
+            heal_amount: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.healer_steam_id);
+        buf.put_u8(self.building_type);
+        buf.put_u16_le(self.building_id);
+        buf.put_u16_le(self.heal_amount);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerInvulnedEvent {
+    pub player_steam_id: u64,
+    pub medic_steam_id: u64,
+    pub duration_ms: u16,
+}
+
+impl PlayerInvulnedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 18 {
+            return Err(RelayError::MalformedPacket {
+                reason: "PlayerInvulned too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            player_steam_id: buf.get_u64_le(),
+            medic_steam_id: buf.get_u64_le(),
+            duration_ms: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.player_steam_id);
+        buf.put_u64_le(self.medic_steam_id);
+        buf.put_u16_le(self.duration_ms);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectileDeflectedEvent {
+    pub pyro_steam_id: u64,
+    pub original_owner_steam_id: u64,
+    pub weapon_id: u16,
+    pub projectile_id: u16,
+}
+
+impl ProjectileDeflectedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 20 {
+            return Err(RelayError::MalformedPacket {
+                reason: "ProjectileDeflected too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            pyro_steam_id: buf.get_u64_le(),
+            original_owner_steam_id: buf.get_u64_le(),
+            weapon_id: buf.get_u16_le(),
+            projectile_id: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.pyro_steam_id);
+        buf.put_u64_le(self.original_owner_steam_id);
+        buf.put_u16_le(self.weapon_id);
+        buf.put_u16_le(self.projectile_id);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayerExtinguishedEvent {
+    pub victim_steam_id: u64,
+    pub healer_steam_id: u64,
+    pub item_def_index: u16,
+}
+
+impl PlayerExtinguishedEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 18 {
+            return Err(RelayError::MalformedPacket {
+                reason: "PlayerExtinguished too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            victim_steam_id: buf.get_u64_le(),
+            healer_steam_id: buf.get_u64_le(),
+            item_def_index: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u64_le(self.victim_steam_id);
+        buf.put_u64_le(self.healer_steam_id);
+        buf.put_u16_le(self.item_def_index);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SentryAttackEvent {
+    pub sentry_id: u16,
+    pub owner_steam_id: u64,
+    pub target_steam_id: u64,
+    pub sentry_level: u8,
+}
+
+impl SentryAttackEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        if buf.remaining() < 19 {
+            return Err(RelayError::MalformedPacket {
+                reason: "SentryAttack too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            sentry_id: buf.get_u16_le(),
+            owner_steam_id: buf.get_u64_le(),
+            target_steam_id: buf.get_u64_le(),
+            sentry_level: buf.get_u8(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        buf.put_u16_le(self.sentry_id);
+        buf.put_u64_le(self.owner_steam_id);
+        buf.put_u64_le(self.target_steam_id);
+        buf.put_u8(self.sentry_level);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GameModeInfoEvent {
+    pub game_mode: String,
+    pub map_name: String,
+    pub max_players: u8,
+    pub time_limit: u16,
+}
+
+impl GameModeInfoEvent {
+    pub fn parse(buf: &mut impl Buf) -> Result<Self> {
+        let game_mode = read_string(buf)?;
+        let map_name = read_string(buf)?;
+
+        if buf.remaining() < 3 {
+            return Err(RelayError::MalformedPacket {
+                reason: "GameModeInfo too short".to_string(),
+            });
+        }
+
+        Ok(Self {
+            game_mode,
+            map_name,
+            max_players: buf.get_u8(),
+            time_limit: buf.get_u16_le(),
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut impl BufMut) {
+        write_string(buf, &self.game_mode);
+        write_string(buf, &self.map_name);
+        buf.put_u8(self.max_players);
+        buf.put_u16_le(self.time_limit);
     }
 }
 

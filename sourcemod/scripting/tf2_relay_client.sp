@@ -23,55 +23,74 @@
 // Protocol Constants
 // ============================================================================
 
-#define PROTOCOL_MAGIC_1          0x54    // 'T'
-#define PROTOCOL_MAGIC_2          0x46    // 'F'
-#define PROTOCOL_VERSION          1
-#define MAX_PAYLOAD_SIZE          4096
-#define HEADER_SIZE               9
-#define CHECKSUM_SIZE             1
+#define PROTOCOL_MAGIC_1           0x54    // 'T'
+#define PROTOCOL_MAGIC_2           0x46    // 'F'
+#define PROTOCOL_VERSION           1
+#define MAX_PAYLOAD_SIZE           4096
+#define HEADER_SIZE                9
+#define CHECKSUM_SIZE              1
 
 // Event Type IDs - System
-#define EVENT_HANDSHAKE           0x00
-#define EVENT_HANDSHAKE_ACK       0x01
-#define EVENT_HEARTBEAT           0x02
-#define EVENT_HEARTBEAT_ACK       0x03
-#define EVENT_SERVER_CONNECT      0x04
-#define EVENT_SERVER_DISCONNECT   0x05
+#define EVENT_HANDSHAKE            0x00
+#define EVENT_HANDSHAKE_ACK        0x01
+#define EVENT_HEARTBEAT            0x02
+#define EVENT_HEARTBEAT_ACK        0x03
+#define EVENT_SERVER_CONNECT       0x04
+#define EVENT_SERVER_DISCONNECT    0x05
 
 // Event Type IDs - Chat
-#define EVENT_CHAT_MESSAGE        0x10
+#define EVENT_CHAT_MESSAGE         0x10
+#define EVENT_ADMIN_MESSAGE        0x11
 
 // Event Type IDs - Players
-#define EVENT_PLAYER_DEATH        0x20
-#define EVENT_PLAYER_CONNECT      0x21
-#define EVENT_PLAYER_DISCONNECT   0x22
-#define EVENT_PLAYER_TEAM_CHANGE  0x23
-#define EVENT_PLAYER_CLASS_CHANGE 0x24
-#define EVENT_PLAYER_SPAWN        0x25
+#define EVENT_PLAYER_DEATH         0x20
+#define EVENT_PLAYER_CONNECT       0x21
+#define EVENT_PLAYER_DISCONNECT    0x22
+#define EVENT_PLAYER_TEAM_CHANGE   0x23
+#define EVENT_PLAYER_CLASS_CHANGE  0x24
+
+// Event Type IDs - Gameplay
+#define EVENT_PLAYER_HEALED        0x30
+#define EVENT_BUILDING_HEALED      0x31
+#define EVENT_UBER_DEPLOYED        0x32
+#define EVENT_PLAYER_INVULNED      0x33
+#define EVENT_PLAYER_HURT          0x34
+#define EVENT_BUILDING_BUILT       0x35
+#define EVENT_BUILDING_DESTROYED   0x36
+#define EVENT_BUILDING_SAPPED      0x37
+#define EVENT_PROJECTILE_DEFLECTED 0x38
+#define EVENT_PLAYER_IGNITED       0x39
+#define EVENT_PLAYER_EXTINGUISHED  0x3A
+#define EVENT_PLAYER_JARATED       0x3B
+#define EVENT_PLAYER_TELEPORTED    0x3C
+#define EVENT_PLAYER_SPAWN         0x3D
+#define EVENT_MEDIC_DEATH          0x3E
+#define EVENT_SENTRY_ATTACK        0x3F
 
 // Event Type IDs - Game
-#define EVENT_ROUND_START         0x40
-#define EVENT_ROUND_END           0x41
-#define EVENT_MAP_CHANGE          0x42
+#define EVENT_ROUND_START          0x40
+#define EVENT_ROUND_END            0x41
+#define EVENT_MAP_CHANGE           0x42
+#define EVENT_GAME_MODE_INFO       0x43
 
 // Event Type IDs - Ghost/Sync
-#define EVENT_PLAYER_SYNC         0x70
-#define EVENT_GHOST_SPAWN         0x71
-#define EVENT_GHOST_DESPAWN       0x72
-#define EVENT_HEAL_REQUEST        0x73
-#define EVENT_HEAL_CONFIRM        0x74
-#define EVENT_UBER_SHARE          0x75
-#define EVENT_DAMAGE_REQUEST      0x76
-#define EVENT_DAMAGE_CONFIRM      0x77
+#define EVENT_PLAYER_SYNC          0x70
+#define EVENT_GHOST_SPAWN          0x71
+#define EVENT_GHOST_DESPAWN        0x72
+#define EVENT_HEAL_REQUEST         0x73
+#define EVENT_HEAL_CONFIRM         0x74
+#define EVENT_UBER_SHARE           0x75
+#define EVENT_DAMAGE_REQUEST       0x76
+#define EVENT_DAMAGE_CONFIRM       0x77
 
 // ============================================================================
 // Ghost System Constants
 // ============================================================================
 
-#define MAX_GHOSTS                64      // Max ghost players across all servers
-#define GHOST_SYNC_RATE           0.05    // 20 times per second
-#define GHOST_TIMEOUT             5.0     // Remove ghost if no update for 5 seconds
-#define GHOST_INTERP_TIME         0.1     // Interpolation time in seconds
+#define MAX_GHOSTS                 64      // Max ghost players across all servers
+#define GHOST_SYNC_RATE            0.05    // 20 times per second
+#define GHOST_TIMEOUT              5.0     // Remove ghost if no update for 5 seconds
+#define GHOST_INTERP_TIME          0.1     // Interpolation time in seconds
 
 // TF2 Class models
 char g_sClassModels[10][PLATFORM_MAX_PATH] = {
@@ -214,6 +233,13 @@ public void OnPluginStart()
     HookEvent("player_builtobject", Event_BuildingBuilt, EventHookMode_Post);
     HookEvent("object_destroyed", Event_BuildingDestroyed, EventHookMode_Post);
     HookEvent("player_chargedeployed", Event_UberDeployed, EventHookMode_Post);
+    HookEvent("player_sapped_object", Event_BuildingSapped, EventHookMode_Post);
+    HookEvent("player_ignited", Event_PlayerIgnited, EventHookMode_Post);
+    HookEvent("player_extinguished", Event_PlayerExtinguished, EventHookMode_Post);
+    HookEvent("player_jarated", Event_PlayerJarated, EventHookMode_Post);
+    HookEvent("player_teleported", Event_PlayerTeleported, EventHookMode_Post);
+    HookEvent("medic_death", Event_MedicDeath, EventHookMode_Post);
+    HookEvent("object_deflected", Event_ProjectileDeflected, EventHookMode_Post);
 
     // Get current map
     GetCurrentMap(g_sCurrentMap, sizeof(g_sCurrentMap));
@@ -222,6 +248,7 @@ public void OnPluginStart()
     RegAdminCmd("sm_relay_reconnect", Command_Reconnect, ADMFLAG_ROOT, "Force reconnect to relay");
     RegAdminCmd("sm_relay_status", Command_Status, ADMFLAG_GENERIC, "Show relay status");
     RegAdminCmd("sm_relay_ghosts", Command_ListGhosts, ADMFLAG_GENERIC, "List active ghosts");
+    RegAdminCmd("sm_relay_say", Command_RelaySay, ADMFLAG_GENERIC, "Broadcast message to all servers");
 
     // Initialize state
     g_bConnected         = false;
@@ -1243,6 +1270,686 @@ void SendMapChange()
     SendPacket(buffer, offset);
 }
 
+void SendPlayerTeamChange(int client, int oldTeam, int newTeam)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[128];
+    int  offset = HEADER_SIZE;
+
+    char playerName[64], steamId[32];
+    GetClientName(client, playerName, sizeof(playerName));
+    GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId));
+
+    offset += WriteString(buffer, offset, playerName);
+    offset += WriteU64(buffer, offset, steamId);
+    offset += WriteU8(buffer, offset, oldTeam);
+    offset += WriteU8(buffer, offset, newTeam);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_TEAM_CHANGE, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_TEAM_CHANGE: %s %d -> %d", playerName, oldTeam, newTeam);
+    }
+}
+
+void SendPlayerClassChange(int client, int newClass)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[128];
+    int  offset = HEADER_SIZE;
+
+    char playerName[64], steamId[32];
+    GetClientName(client, playerName, sizeof(playerName));
+    GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId));
+
+    offset += WriteString(buffer, offset, playerName);
+    offset += WriteU64(buffer, offset, steamId);
+    offset += WriteU8(buffer, offset, newClass);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_CLASS_CHANGE, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_CLASS_CHANGE: %s class=%d", playerName, newClass);
+    }
+}
+
+void SendRoundEnd(int winningTeam, int reason, int roundTime, int redScore, int bluScore)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    offset += WriteU8(buffer, offset, winningTeam);
+    offset += WriteU8(buffer, offset, reason);
+    offset += WriteU16(buffer, offset, roundTime);
+    offset += WriteU16(buffer, offset, redScore);
+    offset += WriteU16(buffer, offset, bluScore);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_ROUND_END, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent ROUND_END: winner=%d reason=%d", winningTeam, reason);
+    }
+}
+
+void SendBuildingBuilt(int client, int buildingType, int buildingIndex, int level, float position[3])
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    char steamId[32];
+    GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId));
+
+    offset += WriteU64(buffer, offset, steamId);
+    offset += WriteU8(buffer, offset, buildingType);
+    offset += WriteU16(buffer, offset, buildingIndex);
+    offset += WriteU8(buffer, offset, level);
+    offset += WriteFloat(buffer, offset, position[0]);
+    offset += WriteFloat(buffer, offset, position[1]);
+    offset += WriteFloat(buffer, offset, position[2]);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_BUILDING_BUILT, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent BUILDING_BUILT: type=%d by %N", buildingType, client);
+    }
+}
+
+void SendBuildingDestroyed(int owner, int attacker, int buildingType, int buildingIndex, const char[] weapon, bool wasSapped)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[256];
+    int  offset = HEADER_SIZE;
+
+    char ownerSteamId[32], attackerSteamId[32];
+    if (owner > 0 && IsClientInGame(owner))
+        GetClientAuthId(owner, AuthId_SteamID64, ownerSteamId, sizeof(ownerSteamId));
+    else
+        ownerSteamId[0] = '\0';
+
+    if (attacker > 0 && IsClientInGame(attacker))
+        GetClientAuthId(attacker, AuthId_SteamID64, attackerSteamId, sizeof(attackerSteamId));
+    else
+        attackerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, ownerSteamId);
+    offset += WriteU64(buffer, offset, attackerSteamId);
+    offset += WriteU8(buffer, offset, buildingType);
+    offset += WriteU16(buffer, offset, buildingIndex);
+    offset += WriteString(buffer, offset, weapon);
+    offset += WriteU8(buffer, offset, wasSapped ? 1 : 0);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_BUILDING_DESTROYED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent BUILDING_DESTROYED: type=%d", buildingType);
+    }
+}
+
+void SendAdminMessage(const char[] adminName, const char[] message)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[512];
+    int  offset = HEADER_SIZE;
+
+    offset += WriteString(buffer, offset, adminName);
+    offset += WriteString(buffer, offset, message);
+    offset += WriteU32(buffer, offset, 0xFFFF00FF);    // Yellow color (RGBA)
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_ADMIN_MESSAGE, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent ADMIN_MESSAGE: [%s] %s", adminName, message);
+    }
+}
+
+void SendPlayerHealed(int patient, int healer, int amount)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    char patientSteamId[32], healerSteamId[32];
+    if (patient > 0 && IsClientInGame(patient))
+        GetClientAuthId(patient, AuthId_SteamID64, patientSteamId, sizeof(patientSteamId));
+    else
+        patientSteamId[0] = '\0';
+
+    if (healer > 0 && IsClientInGame(healer))
+        GetClientAuthId(healer, AuthId_SteamID64, healerSteamId, sizeof(healerSteamId));
+    else
+        healerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, patientSteamId);
+    offset += WriteU64(buffer, offset, healerSteamId);
+    offset += WriteU16(buffer, offset, amount);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_HEALED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_HEALED: %d HP", amount);
+    }
+}
+
+void SendBuildingHealed(int healer, int buildingType, int buildingIndex, int amount)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char healerSteamId[32];
+    if (healer > 0 && IsClientInGame(healer))
+        GetClientAuthId(healer, AuthId_SteamID64, healerSteamId, sizeof(healerSteamId));
+    else
+        healerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, healerSteamId);
+    offset += WriteU8(buffer, offset, buildingType);
+    offset += WriteU16(buffer, offset, buildingIndex);
+    offset += WriteU16(buffer, offset, amount);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_BUILDING_HEALED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent BUILDING_HEALED: %d HP", amount);
+    }
+}
+
+void SendUberDeployed(int medic, int target, int uberType)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char medicSteamId[32], targetSteamId[32];
+    if (medic > 0 && IsClientInGame(medic))
+        GetClientAuthId(medic, AuthId_SteamID64, medicSteamId, sizeof(medicSteamId));
+    else
+        medicSteamId[0] = '\0';
+
+    if (target > 0 && IsClientInGame(target))
+        GetClientAuthId(target, AuthId_SteamID64, targetSteamId, sizeof(targetSteamId));
+    else
+        targetSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, medicSteamId);
+    offset += WriteU64(buffer, offset, targetSteamId);
+    offset += WriteU8(buffer, offset, uberType);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_UBER_DEPLOYED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent UBER_DEPLOYED: type=%d", uberType);
+    }
+}
+
+void SendPlayerInvulned(int medic, int target)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char medicSteamId[32], targetSteamId[32];
+    if (medic > 0 && IsClientInGame(medic))
+        GetClientAuthId(medic, AuthId_SteamID64, medicSteamId, sizeof(medicSteamId));
+    else
+        medicSteamId[0] = '\0';
+
+    if (target > 0 && IsClientInGame(target))
+        GetClientAuthId(target, AuthId_SteamID64, targetSteamId, sizeof(targetSteamId));
+    else
+        targetSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, medicSteamId);
+    offset += WriteU64(buffer, offset, targetSteamId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_INVULNED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_INVULNED");
+    }
+}
+
+void SendPlayerHurt(int victim, int attacker, int damage, int weaponId)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[64];
+    int  offset = HEADER_SIZE;
+
+    char victimSteamId[32], attackerSteamId[32];
+    if (victim > 0 && IsClientInGame(victim))
+        GetClientAuthId(victim, AuthId_SteamID64, victimSteamId, sizeof(victimSteamId));
+    else
+        victimSteamId[0] = '\0';
+
+    if (attacker > 0 && IsClientInGame(attacker))
+        GetClientAuthId(attacker, AuthId_SteamID64, attackerSteamId, sizeof(attackerSteamId));
+    else
+        attackerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, victimSteamId);
+    offset += WriteU64(buffer, offset, attackerSteamId);
+    offset += WriteU16(buffer, offset, damage);
+    offset += WriteU16(buffer, offset, weaponId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_HURT, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_HURT: %d damage", damage);
+    }
+}
+
+void SendBuildingSapped(int spy, int owner, int buildingType, int sapperId)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char spySteamId[32], ownerSteamId[32];
+    if (spy > 0 && IsClientInGame(spy))
+        GetClientAuthId(spy, AuthId_SteamID64, spySteamId, sizeof(spySteamId));
+    else
+        spySteamId[0] = '\0';
+
+    if (owner > 0 && IsClientInGame(owner))
+        GetClientAuthId(owner, AuthId_SteamID64, ownerSteamId, sizeof(ownerSteamId));
+    else
+        ownerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, spySteamId);
+    offset += WriteU64(buffer, offset, ownerSteamId);
+    offset += WriteU8(buffer, offset, buildingType);
+    offset += WriteU16(buffer, offset, sapperId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_BUILDING_SAPPED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent BUILDING_SAPPED: type=%d", buildingType);
+    }
+}
+
+void SendProjectileDeflected(int pyro, int projectileOwner, int weaponDefIndex)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char pyroSteamId[32], ownerSteamId[32];
+    if (pyro > 0 && IsClientInGame(pyro))
+        GetClientAuthId(pyro, AuthId_SteamID64, pyroSteamId, sizeof(pyroSteamId));
+    else
+        pyroSteamId[0] = '\0';
+
+    if (projectileOwner > 0 && IsClientInGame(projectileOwner))
+        GetClientAuthId(projectileOwner, AuthId_SteamID64, ownerSteamId, sizeof(ownerSteamId));
+    else
+        ownerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, pyroSteamId);
+    offset += WriteU64(buffer, offset, ownerSteamId);
+    offset += WriteU16(buffer, offset, weaponDefIndex);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PROJECTILE_DEFLECTED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PROJECTILE_DEFLECTED");
+    }
+}
+
+void SendPlayerIgnited(int victim, int pyro, int weaponId)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char victimSteamId[32], pyroSteamId[32];
+    if (victim > 0 && IsClientInGame(victim))
+        GetClientAuthId(victim, AuthId_SteamID64, victimSteamId, sizeof(victimSteamId));
+    else
+        victimSteamId[0] = '\0';
+
+    if (pyro > 0 && IsClientInGame(pyro))
+        GetClientAuthId(pyro, AuthId_SteamID64, pyroSteamId, sizeof(pyroSteamId));
+    else
+        pyroSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, victimSteamId);
+    offset += WriteU64(buffer, offset, pyroSteamId);
+    offset += WriteU16(buffer, offset, weaponId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_IGNITED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_IGNITED");
+    }
+}
+
+void SendPlayerExtinguished(int extinguisher, int victim)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char extSteamId[32], victimSteamId[32];
+    if (extinguisher > 0 && IsClientInGame(extinguisher))
+        GetClientAuthId(extinguisher, AuthId_SteamID64, extSteamId, sizeof(extSteamId));
+    else
+        extSteamId[0] = '\0';
+
+    if (victim > 0 && IsClientInGame(victim))
+        GetClientAuthId(victim, AuthId_SteamID64, victimSteamId, sizeof(victimSteamId));
+    else
+        victimSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, extSteamId);
+    offset += WriteU64(buffer, offset, victimSteamId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_EXTINGUISHED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_EXTINGUISHED");
+    }
+}
+
+void SendPlayerJarated(int victim, int thrower)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char victimSteamId[32], throwerSteamId[32];
+    if (victim > 0 && IsClientInGame(victim))
+        GetClientAuthId(victim, AuthId_SteamID64, victimSteamId, sizeof(victimSteamId));
+    else
+        victimSteamId[0] = '\0';
+
+    if (thrower > 0 && IsClientInGame(thrower))
+        GetClientAuthId(thrower, AuthId_SteamID64, throwerSteamId, sizeof(throwerSteamId));
+    else
+        throwerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, victimSteamId);
+    offset += WriteU64(buffer, offset, throwerSteamId);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_JARATED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_JARATED");
+    }
+}
+
+void SendPlayerTeleported(int player, int builder, float distance)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char playerSteamId[32], builderSteamId[32];
+    if (player > 0 && IsClientInGame(player))
+        GetClientAuthId(player, AuthId_SteamID64, playerSteamId, sizeof(playerSteamId));
+    else
+        playerSteamId[0] = '\0';
+
+    if (builder > 0 && IsClientInGame(builder))
+        GetClientAuthId(builder, AuthId_SteamID64, builderSteamId, sizeof(builderSteamId));
+    else
+        builderSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, playerSteamId);
+    offset += WriteU64(buffer, offset, builderSteamId);
+    offset += WriteFloat(buffer, offset, distance);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_PLAYER_TELEPORTED, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent PLAYER_TELEPORTED: dist=%.0f", distance);
+    }
+}
+
+void SendMedicDeath(int medic, int attacker, int healingDone, bool hadUber)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char medicSteamId[32], attackerSteamId[32];
+    if (medic > 0 && IsClientInGame(medic))
+        GetClientAuthId(medic, AuthId_SteamID64, medicSteamId, sizeof(medicSteamId));
+    else
+        medicSteamId[0] = '\0';
+
+    if (attacker > 0 && IsClientInGame(attacker))
+        GetClientAuthId(attacker, AuthId_SteamID64, attackerSteamId, sizeof(attackerSteamId));
+    else
+        attackerSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, medicSteamId);
+    offset += WriteU64(buffer, offset, attackerSteamId);
+    offset += WriteU16(buffer, offset, healingDone);
+    offset += WriteU8(buffer, offset, hadUber ? 1 : 0);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_MEDIC_DEATH, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent MEDIC_DEATH: hadUber=%s", hadUber ? "yes" : "no");
+    }
+}
+
+void SendSentryAttack(int owner, int target, int sentryLevel, int damage)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[32];
+    int  offset = HEADER_SIZE;
+
+    char ownerSteamId[32], targetSteamId[32];
+    if (owner > 0 && IsClientInGame(owner))
+        GetClientAuthId(owner, AuthId_SteamID64, ownerSteamId, sizeof(ownerSteamId));
+    else
+        ownerSteamId[0] = '\0';
+
+    if (target > 0 && IsClientInGame(target))
+        GetClientAuthId(target, AuthId_SteamID64, targetSteamId, sizeof(targetSteamId));
+    else
+        targetSteamId[0] = '\0';
+
+    offset += WriteU64(buffer, offset, ownerSteamId);
+    offset += WriteU64(buffer, offset, targetSteamId);
+    offset += WriteU8(buffer, offset, sentryLevel);
+    offset += WriteU16(buffer, offset, damage);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_SENTRY_ATTACK, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent SENTRY_ATTACK: lvl=%d dmg=%d", sentryLevel, damage);
+    }
+}
+
+void SendGameModeInfo(const char[] gameMode, const char[] mapName, int maxPlayers, int timeLimit)
+{
+    if (!g_bHandshakeComplete) return;
+
+    char buffer[256];
+    int  offset = HEADER_SIZE;
+
+    offset += WriteString(buffer, offset, gameMode);
+    offset += WriteString(buffer, offset, mapName);
+    offset += WriteU8(buffer, offset, maxPlayers);
+    offset += WriteU16(buffer, offset, timeLimit);
+
+    int payloadLen = offset - HEADER_SIZE;
+    BuildPacketHeader(buffer, EVENT_GAME_MODE_INFO, payloadLen);
+
+    SendPacket(buffer, offset);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Sent GAME_MODE_INFO: %s on %s", gameMode, mapName);
+    }
+}
+
+// ============================================================================
+// Admin Commands
+// ============================================================================
+public Action Command_Reconnect(int client, int args)
+{
+    if (g_bConnected)
+    {
+        Disconnect();
+        RemoveAllGhosts();
+    }
+    ConnectToRelay();
+    ReplyToCommand(client, "[Relay] Reconnecting to relay server...");
+    return Plugin_Handled;
+}
+
+public Action Command_Status(int client, int args)
+{
+    ReplyToCommand(client, "[Relay] Status:");
+    ReplyToCommand(client, "  Connected: %s", g_bConnected ? "Yes" : "No");
+    ReplyToCommand(client, "  Handshake: %s", g_bHandshakeComplete ? "Complete" : "Pending");
+    ReplyToCommand(client, "  Server ID: %d", g_iServerId);
+    ReplyToCommand(client, "  Server Name: %s", g_sServerName);
+    ReplyToCommand(client, "  Active Ghosts: %d", g_iGhostCount);
+    return Plugin_Handled;
+}
+
+public Action Command_ListGhosts(int client, int args)
+{
+    if (g_iGhostCount == 0)
+    {
+        ReplyToCommand(client, "[Relay] No active ghosts.");
+        return Plugin_Handled;
+    }
+
+    ReplyToCommand(client, "[Relay] Active Ghosts (%d):", g_iGhostCount);
+    for (int i = 0; i < MAX_GHOSTS; i++)
+    {
+        if (g_Ghosts[i].active)
+        {
+            ReplyToCommand(client, "  [%d] %s (Server %d, Team %d)",
+                           i, g_Ghosts[i].playerName, g_Ghosts[i].serverId, g_Ghosts[i].team);
+        }
+    }
+    return Plugin_Handled;
+}
+
+public Action Command_RelaySay(int client, int args)
+{
+    if (args < 1)
+    {
+        ReplyToCommand(client, "[Relay] Usage: sm_relay_say <message>");
+        return Plugin_Handled;
+    }
+
+    char message[256], adminName[64];
+    GetCmdArgString(message, sizeof(message));
+
+    if (client > 0)
+        GetClientName(client, adminName, sizeof(adminName));
+    else
+        strcopy(adminName, sizeof(adminName), "Console");
+
+    SendAdminMessage(adminName, message);
+    ReplyToCommand(client, "[Relay] Message broadcast to all servers.");
+    return Plugin_Handled;
+}
+
 // ============================================================================
 // Incoming Data Processing
 // ============================================================================
@@ -1677,6 +2384,21 @@ public Action Event_PlayerDisconnect(Event event, const char[] name, bool dontBr
 
 public Action Event_PlayerTeam(Event event, const char[] name, bool dontBroadcast)
 {
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int client = GetClientOfUserId(event.GetInt("userid"));
+    if (client < 1 || !IsClientInGame(client) || IsFakeClient(client))
+        return Plugin_Continue;
+
+    int oldTeam = event.GetInt("oldteam");
+    int newTeam = event.GetInt("team");
+
+    // Don't send if teams are the same (e.g., on initial join)
+    if (oldTeam == newTeam)
+        return Plugin_Continue;
+
+    SendPlayerTeamChange(client, oldTeam, newTeam);
     return Plugin_Continue;
 }
 
@@ -1704,6 +2426,15 @@ public Action Timer_DelayedSpawn(Handle timer, int userId)
 
 public Action Event_PlayerClass(Event event, const char[] name, bool dontBroadcast)
 {
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int client = GetClientOfUserId(event.GetInt("userid"));
+    if (client < 1 || !IsClientInGame(client) || IsFakeClient(client))
+        return Plugin_Continue;
+
+    int newClass = event.GetInt("class");
+    SendPlayerClassChange(client, newClass);
     return Plugin_Continue;
 }
 
@@ -1715,6 +2446,18 @@ public Action Event_RoundStart(Event event, const char[] name, bool dontBroadcas
 
 public Action Event_RoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int winningTeam = event.GetInt("team");
+    int reason      = event.GetInt("winreason");
+    int roundTime   = event.GetInt("game_over") ? 0 : event.GetInt("full_round");
+
+    // Get team scores
+    int redScore    = GetTeamScore(2);
+    int bluScore    = GetTeamScore(3);
+
+    SendRoundEnd(winningTeam, reason, roundTime, redScore, bluScore);
     return Plugin_Continue;
 }
 
@@ -1798,17 +2541,27 @@ public Action Event_BuildingBuilt(Event event, const char[] name, bool dontBroad
     if (client < 1 || !IsClientInGame(client))
         return Plugin_Continue;
 
-    int objectType = event.GetInt("object");
-    // int index = event.GetInt("index"); // Will be used when sending BUILDING_BUILT event
+    int   objectType = event.GetInt("object");
+    int   index      = event.GetInt("index");
+
+    // Get building entity to get position and level
+    float position[3];
+    int   level = 1;
+
+    if (IsValidEntity(index))
+    {
+        GetEntPropVector(index, Prop_Send, "m_vecOrigin", position);
+        // Buildings use m_iUpgradeLevel for level (0-2, so +1 for display)
+        if (HasEntProp(index, Prop_Send, "m_iUpgradeLevel"))
+            level = GetEntProp(index, Prop_Send, "m_iUpgradeLevel") + 1;
+    }
 
     if (g_cvDebug.BoolValue)
     {
         LogMessage("[Relay] Building built: type %d by %N", objectType, client);
     }
 
-    // TODO: Send BUILDING_BUILT event to relay
-    // Format: builder_steam_id(8) + building_type(1) + building_id(2) + level(1) + position(12)
-
+    SendBuildingBuilt(client, objectType, index, level, position);
     return Plugin_Continue;
 }
 
@@ -1817,8 +2570,14 @@ public Action Event_BuildingDestroyed(Event event, const char[] name, bool dontB
     if (!g_bHandshakeComplete)
         return Plugin_Continue;
 
-    int attacker   = GetClientOfUserId(event.GetInt("attacker"));
-    int objectType = event.GetInt("objecttype");
+    int  attacker   = GetClientOfUserId(event.GetInt("attacker"));
+    int  objectType = event.GetInt("objecttype");
+    int  index      = event.GetInt("index");
+    int  owner      = GetClientOfUserId(event.GetInt("userid"));
+    bool wasSapped  = event.GetBool("was_sapped");
+
+    char weapon[64];
+    event.GetString("weapon", weapon, sizeof(weapon));
 
     if (g_cvDebug.BoolValue)
     {
@@ -1828,9 +2587,7 @@ public Action Event_BuildingDestroyed(Event event, const char[] name, bool dontB
             LogMessage("[Relay] Building destroyed: type %d", objectType);
     }
 
-    // TODO: Send BUILDING_DESTROYED event to relay
-    // Format: owner_steam_id(8) + attacker_steam_id(8) + building_type(1) + building_id(2) + weapon(str) + was_sapped(1)
-
+    SendBuildingDestroyed(owner, attacker, objectType, index, weapon, wasSapped);
     return Plugin_Continue;
 }
 
@@ -1886,6 +2643,183 @@ public Action Event_UberDeployed(Event event, const char[] name, bool dontBroadc
     return Plugin_Continue;
 }
 
+public Action Event_BuildingSapped(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int spy   = GetClientOfUserId(event.GetInt("userid"));
+    int owner = GetClientOfUserId(event.GetInt("ownerid"));
+    int type  = event.GetInt("object");
+    int index = event.GetInt("sapperid");
+
+    if (spy < 1 || !IsClientInGame(spy))
+        return Plugin_Continue;
+
+    SendBuildingSapped(spy, owner, type, index);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Building sapped by %N", spy);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_PlayerIgnited(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int victim = GetClientOfUserId(event.GetInt("userid"));
+    int pyro   = GetClientOfUserId(event.GetInt("attacker"));
+    int weapon = event.GetInt("weaponid");
+
+    if (victim < 1 || !IsClientInGame(victim))
+        return Plugin_Continue;
+
+    SendPlayerIgnited(victim, pyro, weapon);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] %N ignited by %N", victim, pyro);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_PlayerExtinguished(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int victim       = GetClientOfUserId(event.GetInt("userid"));
+    int extinguisher = GetClientOfUserId(event.GetInt("healer"));
+
+    if (victim < 1 || !IsClientInGame(victim))
+        return Plugin_Continue;
+
+    SendPlayerExtinguished(extinguisher, victim);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] %N extinguished by %N", victim, extinguisher);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_PlayerJarated(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int victim  = GetClientOfUserId(event.GetInt("userid"));
+    int thrower = GetClientOfUserId(event.GetInt("thrower_entindex"));
+
+    if (victim < 1 || !IsClientInGame(victim))
+        return Plugin_Continue;
+
+    SendPlayerJarated(victim, thrower);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] %N jarated by %N", victim, thrower);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_PlayerTeleported(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int   player  = GetClientOfUserId(event.GetInt("userid"));
+    int   builder = GetClientOfUserId(event.GetInt("builderid"));
+    float dist    = event.GetFloat("dist");
+
+    if (player < 1 || !IsClientInGame(player))
+        return Plugin_Continue;
+
+    SendPlayerTeleported(player, builder, dist);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] %N teleported %.0f units", player, dist);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_MedicDeath(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int  medic    = GetClientOfUserId(event.GetInt("userid"));
+    int  attacker = GetClientOfUserId(event.GetInt("attacker"));
+    int  healing  = event.GetInt("healing");
+    bool hadUber  = event.GetBool("charged");
+
+    if (medic < 1 || !IsClientInGame(medic))
+        return Plugin_Continue;
+
+    SendMedicDeath(medic, attacker, healing, hadUber);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Medic %N died (uber: %s)", medic, hadUber ? "yes" : "no");
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_ProjectileDeflected(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int pyro         = GetClientOfUserId(event.GetInt("userid"));
+    int owner        = GetClientOfUserId(event.GetInt("ownerid"));
+    int weaponDefIdx = event.GetInt("weapon_def_index");
+
+    if (pyro < 1 || !IsClientInGame(pyro))
+        return Plugin_Continue;
+
+    SendProjectileDeflected(pyro, owner, weaponDefIdx);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] %N deflected projectile from %N", pyro, owner);
+    }
+
+    return Plugin_Continue;
+}
+
+public Action Event_BuildingHealed(Event event, const char[] name, bool dontBroadcast)
+{
+    if (!g_bHandshakeComplete)
+        return Plugin_Continue;
+
+    int  healer     = GetClientOfUserId(event.GetInt("userid"));
+    int  building   = GetClientOfUserId(event.GetInt("objectid"));
+    int  amount     = event.GetInt("healamount");
+    bool overhealed = event.GetBool("overhealed");
+
+    if (healer < 1 || !IsClientInGame(healer))
+        return Plugin_Continue;
+
+    SendBuildingHealed(healer, building, amount, overhealed);
+
+    if (g_cvDebug.BoolValue)
+    {
+        LogMessage("[Relay] Building %N healed %d HP", building, amount);
+    }
+
+    return Plugin_Continue;
+}
+
 // ============================================================================
 // Timers
 // ============================================================================
@@ -1897,47 +2831,6 @@ public Action Timer_Heartbeat(Handle timer)
     }
 
     return g_bConnected ? Plugin_Continue : Plugin_Stop;
-}
-
-// ============================================================================
-// Commands
-// ============================================================================
-public Action Command_Reconnect(int client, int args)
-{
-    Disconnect();
-    RemoveAllGhosts();
-    ConnectToRelay();
-
-    ReplyToCommand(client, "[Relay] Reconnecting...");
-    return Plugin_Handled;
-}
-
-public Action Command_Status(int client, int args)
-{
-    ReplyToCommand(client, "[Relay] Status:");
-    ReplyToCommand(client, "  Connected: %s", g_bConnected ? "Yes" : "No");
-    ReplyToCommand(client, "  Handshake: %s", g_bHandshakeComplete ? "Complete" : "Pending");
-    ReplyToCommand(client, "  Server ID: %d", g_iServerId);
-    ReplyToCommand(client, "  Server Name: %s", g_sServerName);
-    ReplyToCommand(client, "  Active Ghosts: %d", g_iGhostCount);
-
-    return Plugin_Handled;
-}
-
-public Action Command_ListGhosts(int client, int args)
-{
-    ReplyToCommand(client, "[Relay] Active Ghosts (%d):", g_iGhostCount);
-
-    for (int i = 0; i < MAX_GHOSTS; i++)
-    {
-        if (g_Ghosts[i].active)
-        {
-            ReplyToCommand(client, "  [%d] %s (Server %d, Class %d)",
-                           i, g_Ghosts[i].playerName, g_Ghosts[i].serverId, g_Ghosts[i].classId);
-        }
-    }
-
-    return Plugin_Handled;
 }
 
 // ============================================================================
